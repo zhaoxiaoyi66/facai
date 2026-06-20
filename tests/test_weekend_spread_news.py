@@ -4,9 +4,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from data.weekend_spread_news import (
-    WINDOW_AFTER_P0,
-    WINDOW_PRE_ANCHOR,
-    WINDOW_PRE_OVERNIGHT,
     WeekendSpreadNewsStore,
     build_weekend_spread_news_context,
     normalize_weekend_spread_news_record,
@@ -52,29 +49,66 @@ def _item(symbol: str, title: str, published: str, *, source: str = "FMP", url: 
     )
 
 
-def test_weekend_news_windows_split_three_segments() -> None:
+def test_weekend_news_window_uses_last_trading_day_close_to_next_overnight() -> None:
+    windows = weekend_spread_news_windows(_sample())
+
+    assert windows["window_start_et"] == datetime(2026, 6, 12, 16, 0, tzinfo=ET)
+    assert windows["window_end_et"] == datetime(2026, 6, 14, 20, 1, tzinfo=ET)
+
+
+def test_weekend_news_window_uses_thursday_when_friday_is_closed() -> None:
+    sample = {
+        **_sample(),
+        "last_trading_day": "2026-06-18",
+        "friday_afterhours_time": "2026-06-18T19:59:00-04:00",
+        "p2_session_start_et": "2026-06-21T20:00:00-04:00",
+        "p2_first_valid_time": "",
+    }
+
+    windows = weekend_spread_news_windows(sample, now=datetime(2026, 6, 20, 12, 0, tzinfo=ET))
+
+    assert windows["window_start_et"] == datetime(2026, 6, 18, 16, 0, tzinfo=ET)
+    assert windows["window_end_et"] == datetime(2026, 6, 20, 12, 0, tzinfo=ET)
+
+
+def test_weekend_news_window_can_shift_for_monday_holiday() -> None:
+    sample = {
+        **_sample(),
+        "last_trading_day": "2026-05-22",
+        "friday_afterhours_time": "2026-05-22T19:59:00-04:00",
+        "p2_session_start_et": "2026-05-25T20:00:00-04:00",
+        "p2_first_valid_time": "",
+    }
+
+    windows = weekend_spread_news_windows(sample, now=datetime(2026, 5, 24, 12, 0, tzinfo=ET))
+
+    assert windows["window_start_et"] == datetime(2026, 5, 22, 16, 0, tzinfo=ET)
+    assert windows["window_end_et"] == datetime(2026, 5, 24, 12, 0, tzinfo=ET)
+
+
+def test_weekend_news_window_includes_all_closed_market_news_without_segments() -> None:
     windows = weekend_spread_news_windows(_sample())
     items = [
         _item("NVDA", "pre anchor", "2026-06-12T18:00:00-04:00"),
         _item("NVDA", "after p0", "2026-06-13T10:00:00-04:00"),
         _item("NVDA", "pre overnight", "2026-06-14T15:00:00-04:00"),
+        _item("NVDA", "outside", "2026-06-15T10:00:00-04:00"),
     ]
 
     buckets = split_news_by_weekend_windows(items, windows)
 
-    assert [row["original_title"] for row in buckets[WINDOW_PRE_ANCHOR]] == ["pre anchor"]
-    assert [row["original_title"] for row in buckets[WINDOW_AFTER_P0]] == ["after p0"]
-    assert [row["original_title"] for row in buckets[WINDOW_PRE_OVERNIGHT]] == ["pre overnight"]
+    all_titles = {row["original_title"] for rows in buckets.values() for row in rows}
+    assert {"pre anchor", "after p0", "pre overnight"}.issubset(all_titles)
+    assert "outside" not in all_titles
 
 
 def test_no_after_p0_news_is_no_news_explanation(tmp_path) -> None:
     store = _store(tmp_path)
-    store.upsert_news(_item("NVDA", "premarket recap", "2026-06-12T18:00:00-04:00"))
 
     context = build_weekend_spread_news_context("NVDA", _sample(), store=store)
 
     assert context["gap_explanation_label"] == "无新闻解释"
-    assert context["news_count_after_p0"] == 0
+    assert context["news_count"] == 0
 
 
 def test_positive_news_and_premium_is_direction_consistent(tmp_path) -> None:
@@ -84,8 +118,8 @@ def test_positive_news_and_premium_is_direction_consistent(tmp_path) -> None:
     context = build_weekend_spread_news_context("NVDA", _sample(premium=2.5), store=store)
 
     assert context["gap_explanation_label"] == "新闻方向一致"
-    assert context["major_news_after_p0"] == 1
-    assert context["positive_news_after_p0"] == 1
+    assert context["major_news_count"] == 1
+    assert context["positive_news_count"] == 1
 
 
 def test_negative_news_and_discount_is_direction_consistent(tmp_path) -> None:
@@ -95,7 +129,7 @@ def test_negative_news_and_discount_is_direction_consistent(tmp_path) -> None:
     context = build_weekend_spread_news_context("NVDA", _sample(premium=-2.5), store=store)
 
     assert context["gap_explanation_label"] == "新闻方向一致"
-    assert context["negative_news_after_p0"] == 1
+    assert context["negative_news_count"] == 1
 
 
 def test_opinion_article_is_not_treated_as_basic_news_explanation(tmp_path) -> None:

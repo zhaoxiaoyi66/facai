@@ -95,10 +95,6 @@ from data.weekend_spread_monitor import (
 )
 from data.weekend_spread_news import (
     MISSING_URL_TEXT as WEEKEND_NEWS_MISSING_URL_TEXT,
-    WINDOW_AFTER_P0,
-    WINDOW_LABELS as WEEKEND_NEWS_WINDOW_LABELS,
-    WINDOW_PRE_ANCHOR,
-    WINDOW_PRE_OVERNIGHT,
     WeekendSpreadNewsStore,
     build_weekend_spread_news_context,
     refresh_weekend_spread_news,
@@ -2372,15 +2368,15 @@ def _render_backtest_result_sections(
 
 
 def _render_closed_market_news_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
-    st.subheader("休市新闻 / 价差新闻解释")
-    st.caption("只检查最后交易日收盘后到下一次夜盘开盘前的新闻，用于判断 Binance 周末价差是否可能由休市期间的新消息驱动。")
+    st.subheader("休市新闻")
+    st.caption("只检查本周最后交易日收盘后，到下一次夜盘开盘前的新闻，用于判断 Binance 周末价差是否可能由新消息驱动。")
     st.info("新闻只能解释可能原因，不构成交易建议。观点文章不等同于公司基本面变化。")
 
     cached_result = dict(st.session_state.get("weekend_spread_backtest_cache") or load_backtest_results())
     source_rows = list(st.session_state.get("weekend_spread_backtest_results") or cached_result.get("rows") or [])
     review_rows = _weekend_review_rows(source_rows)
     if not review_rows:
-        st.info("请先在“历史回测”里运行一个样本，再查看对应周末的休市新闻时间线。")
+        st.info("请先在“历史回测”里运行一个样本，再查看对应周末的休市新闻。")
         return
 
     symbol_options = sorted({str(row.get("ticker") or "").strip().upper() for row in review_rows if row.get("ticker")})
@@ -2432,12 +2428,7 @@ def _render_closed_market_news_tab(watchlist: list[str], mapping: dict[str, dict
         st.rerun()
 
     context = build_weekend_spread_news_context(selected_symbol, sample, store=store)
-    all_items = [
-        item
-        for bucket in (context.get("window_news") or {}).values()
-        for item in bucket
-        if isinstance(item, dict)
-    ]
+    all_items = [item for item in context.get("news_items") or [] if isinstance(item, dict)]
     if translate_clicked:
         result = store.fill_missing_translations(all_items)
         st.success(f"已补全 {result.get('title', 0)} 条中文标题，{result.get('summary', 0)} 条中文摘要，失败 {result.get('failed', 0)} 条。")
@@ -2470,28 +2461,26 @@ def _render_weekend_spread_news_core(symbol: str, week_id: str, sample: dict, co
 def _render_weekend_spread_news_timeline(context: dict) -> None:
     windows = context.get("windows") or {}
     if not windows.get("ok"):
-        st.warning("缺少 P0 / P1 / 夜盘窗口时间，暂时无法切分休市新闻时间线。")
+        st.warning("缺少休市新闻窗口时间，暂时无法判断休市新闻。")
         return
-    st.markdown("#### 休市新闻时间线")
+    st.markdown("#### 休市新闻窗口")
     st.caption(_weekend_news_window_summary(windows))
-    window_news = context.get("window_news") or {}
-    order = [WINDOW_PRE_ANCHOR, WINDOW_AFTER_P0, WINDOW_PRE_OVERNIGHT]
-    for key in order:
-        label = WEEKEND_NEWS_WINDOW_LABELS.get(key, key)
-        items = list(window_news.get(key) or [])
-        expanded = key == WINDOW_AFTER_P0
-        with st.expander(f"{label}（{len(items)}）", expanded=expanded):
-            if not items:
-                st.caption("这一段暂无缓存新闻。点击“刷新休市新闻”可读取当前标的新闻。")
-                continue
-            major_items = [item for item in items if str(item.get("impact_level") or "") == "重大"]
-            regular_items = [item for item in items if item not in major_items]
-            if major_items:
-                st.caption("重大 / 待复核新闻")
-                _render_weekend_news_cards(major_items)
-            if regular_items:
-                with st.expander("普通新闻", expanded=False):
-                    _render_weekend_news_cards(regular_items)
+    items = [item for item in context.get("news_items") or [] if isinstance(item, dict)]
+    if not items:
+        st.caption("休市窗口内暂无缓存新闻。点击“刷新休市新闻”可读取当前标的新闻。")
+        return
+    major_items = [
+        item
+        for item in items
+        if str(item.get("impact_level") or "") == "重大" or str(item.get("sentiment_label") or "") == "待判断"
+    ]
+    regular_items = [item for item in items if item not in major_items]
+    if major_items:
+        st.caption("重大 / 待复核新闻")
+        _render_weekend_news_cards(major_items)
+    if regular_items:
+        with st.expander(f"普通新闻（{len(regular_items)}）", expanded=False):
+            _render_weekend_news_cards(regular_items)
 
 
 def _render_weekend_news_cards(items: list[dict]) -> None:
@@ -2537,11 +2526,7 @@ def _render_weekend_news_cards(items: list[dict]) -> None:
 
 
 def _weekend_news_window_summary(windows: dict) -> str:
-    return (
-        f"盘后锚点前：{_short_hkt_time(windows.get('pre_anchor_start_et'))} 至 {_short_hkt_time(windows.get('p0_time_et'))}；"
-        f"锚点后重点：{_short_hkt_time(windows.get('p0_time_et'))} 至 {_short_hkt_time(windows.get('p1_time_et'))}；"
-        f"夜盘前：{_short_hkt_time(windows.get('p1_time_et'))} 至 {_short_hkt_time(windows.get('pre_overnight_end_et'))}。"
-    )
+    return f"休市新闻窗口：{_short_hkt_time(windows.get('window_start_et'))} 至 {_short_hkt_time(windows.get('window_end_et'))}"
 
 
 def _display_text(value: object, fallback: str = "暂无") -> str:

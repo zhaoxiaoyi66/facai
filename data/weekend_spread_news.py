@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
@@ -15,11 +15,13 @@ HKT = ZoneInfo("Asia/Hong_Kong")
 NEWS_CACHE_PATH = Path("data/cache/weekend_spread_news.sqlite")
 NEWS_TTL_HOURS = 6
 
+WINDOW_CLOSED_MARKET = "closed_market"
 WINDOW_PRE_ANCHOR = "pre_anchor"
 WINDOW_AFTER_P0 = "after_p0"
 WINDOW_PRE_OVERNIGHT = "pre_overnight"
 
 WINDOW_LABELS = {
+    WINDOW_CLOSED_MARKET: "休市新闻窗口",
     WINDOW_PRE_ANCHOR: "盘后锚点前新闻",
     WINDOW_AFTER_P0: "锚点后新闻，重点",
     WINDOW_PRE_OVERNIGHT: "夜盘前新闻",
@@ -44,64 +46,81 @@ def build_weekend_spread_news_context(
         return {
             "symbol": clean_symbol,
             "windows": windows,
+            "window_start_et": windows.get("window_start_et"),
+            "window_end_et": windows.get("window_end_et"),
+            "window_label": "休市新闻窗口",
+            "news_count": 0,
+            "major_news_count": 0,
+            "positive_news_count": 0,
+            "negative_news_count": 0,
+            "opinion_news_count": 0,
             "news_count_after_p0": 0,
             "major_news_after_p0": 0,
             "positive_news_after_p0": 0,
             "negative_news_after_p0": 0,
             "gap_explanation_label": "数据不足",
-            "explanation_zh": "缺少 P0 / P1 / 夜盘窗口时间，暂时无法判断休市新闻是否解释价差。",
+            "explanation_zh": "缺少休市新闻窗口时间，暂时无法判断新闻是否解释价差。",
             "key_news_list": [],
-            "window_news": {key: [] for key in WINDOW_LABELS},
+            "news_items": [],
+            "window_news": _legacy_window_news([]),
         }
 
     all_news = store.list_news(
         clean_symbol,
-        start_et=windows["pre_anchor_start_et"],
-        end_et=windows["pre_overnight_end_et"],
+        start_et=windows["window_start_et"],
+        end_et=windows["window_end_et"],
         limit=200,
     )
-    window_news = split_news_by_weekend_windows(all_news, windows)
-    after_p0 = window_news[WINDOW_AFTER_P0]
-    major_after_p0 = [item for item in after_p0 if item.get("impact_level") == "重大"]
-    positive_after_p0 = [item for item in major_after_p0 if item.get("sentiment_label") == "正面"]
-    negative_after_p0 = [item for item in major_after_p0 if item.get("sentiment_label") == "负面"]
+    window_items = _sort_news_desc(all_news)
+    major_news = [item for item in window_items if item.get("impact_level") == "重大"]
+    positive_news = [item for item in major_news if item.get("sentiment_label") == "正面"]
+    negative_news = [item for item in major_news if item.get("sentiment_label") == "负面"]
     premium = _number(sample.get("binance_premium_pct") or sample.get("weekend_premium_pct"))
 
-    opinion_after_p0 = [item for item in after_p0 if item.get("event_type") == "观点文章"]
-    if not after_p0:
+    opinion_news = [item for item in window_items if item.get("event_type") == "观点文章"]
+    if not window_items:
         label = "无新闻解释"
-        explanation = "P0 之后未发现相关新闻，本轮 Binance 价差更可能来自流动性、资金、映射误差或市场预期。"
-    elif not major_after_p0 and opinion_after_p0:
+        explanation = "休市期间未发现重大新闻，本轮 Binance 价差缺少明确新闻解释，更可能来自流动性、资金行为、映射溢价或市场预期。"
+    elif not major_news and opinion_news:
         label = "观点文章，不足以解释价差"
-        explanation = "P0 之后主要是媒体观点文章，不等同于公司公告或即时基本面变化。"
-    elif not major_after_p0:
+        explanation = "休市期间主要为观点文章，不属于明确公司基本面事件，需人工复核。"
+    elif not major_news:
         label = "无新闻解释"
-        explanation = "P0 之后有普通新闻，但未发现重大公司事件，暂不足以解释大幅价差。"
+        explanation = "休市期间有普通新闻，但未发现重大公司事件，暂不足以解释大幅价差。"
     elif premium is None:
         label = "有新闻解释"
-        explanation = "P0 之后出现重大新闻，但缺少价差方向，需人工判断是否解释本轮波动。"
-    elif (premium >= 0 and positive_after_p0) or (premium < 0 and negative_after_p0):
+        explanation = "休市期间出现重大新闻，但缺少价差方向，需人工判断是否解释本轮波动。"
+    elif (premium >= 0 and positive_news) or (premium < 0 and negative_news):
         label = "新闻方向一致"
-        explanation = "P0 之后重大新闻方向与 Binance 价差方向一致，可能解释部分溢价或折价。"
-    elif (premium >= 0 and negative_after_p0) or (premium < 0 and positive_after_p0):
+        explanation = "休市期间重大新闻方向与 Binance 价差方向一致，价差可能部分受到新闻催化。"
+    elif (premium >= 0 and negative_news) or (premium < 0 and positive_news):
         label = "新闻方向不一致"
-        explanation = "P0 之后重大新闻方向与 Binance 价差方向相反，价差更可能来自其他因素。"
+        explanation = "休市期间重大新闻方向与 Binance 价差方向相反，暂不足以解释本轮价差。"
     else:
         label = "有新闻解释"
-        explanation = "P0 之后出现重大新闻，但情绪方向不明确，需要人工复核影响。"
+        explanation = "休市期间出现重大新闻，但情绪方向不明确，需要人工复核影响。"
 
-    key_news = major_after_p0 or after_p0[:3]
+    key_news = major_news or opinion_news[:3] or window_items[:3]
     return {
         "symbol": clean_symbol,
         "windows": windows,
-        "news_count_after_p0": len(after_p0),
-        "major_news_after_p0": len(major_after_p0),
-        "positive_news_after_p0": len(positive_after_p0),
-        "negative_news_after_p0": len(negative_after_p0),
+        "window_start_et": windows.get("window_start_et"),
+        "window_end_et": windows.get("window_end_et"),
+        "window_label": "休市新闻窗口",
+        "news_count": len(window_items),
+        "major_news_count": len(major_news),
+        "positive_news_count": len(positive_news),
+        "negative_news_count": len(negative_news),
+        "opinion_news_count": len(opinion_news),
+        "news_count_after_p0": len(window_items),
+        "major_news_after_p0": len(major_news),
+        "positive_news_after_p0": len(positive_news),
+        "negative_news_after_p0": len(negative_news),
         "gap_explanation_label": label,
         "explanation_zh": explanation,
         "key_news_list": key_news[:5],
-        "window_news": window_news,
+        "news_items": window_items,
+        "window_news": _legacy_window_news(window_items),
     }
 
 
@@ -184,18 +203,6 @@ def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None 
             "last_trading_day_close_time_et",
         ),
     )
-    p1 = _first_datetime(
-        sample,
-        raw,
-        (
-            "p1_time",
-            "binance_max_time",
-            "binance_weekend_max_time",
-            "weekend_max_time",
-            "contract_sample_time",
-            "binance_high_time",
-        ),
-    )
     p2 = _first_datetime(
         sample,
         raw,
@@ -218,23 +225,50 @@ def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None 
             "overnight_bar_start_et",
         ),
     )
-    if p2 is None:
-        p2 = session_start
-    end = p2 or session_start or now or datetime.now(timezone.utc)
-    end = _ensure_et(end)
+    current_et = _ensure_et(now or datetime.now(timezone.utc))
+    planned_end = session_start or p2
+    if planned_end is None:
+        end = current_et
+    else:
+        planned_end = _ensure_et(planned_end)
+        end = current_et if current_et < planned_end else planned_end
 
-    if p0 is None or p1 is None:
-        return {"ok": False, "reason": "缺少 P0 或 P1 时间"}
-    p0 = _ensure_et(p0)
-    p1 = _ensure_et(p1)
-    pre_anchor_start = datetime.combine(p0.date(), time(16, 0), tzinfo=ET)
-    if pre_anchor_start > p0:
-        pre_anchor_start = p0 - timedelta(hours=4)
+    last_trading_day = _first_date(
+        sample,
+        raw,
+        (
+            "last_trading_day",
+            "regular_close_date",
+            "friday_close_date",
+            "close_date",
+        ),
+    )
+    if last_trading_day is None and p0 is not None:
+        last_trading_day = _ensure_et(p0).date()
+    if last_trading_day is None:
+        return {"ok": False, "reason": "缺少最后交易日时间"}
+    start = datetime.combine(last_trading_day, time(16, 0), tzinfo=ET)
+    if end < start:
+        end = current_et if current_et >= start else start
     return {
         "ok": True,
-        "pre_anchor_start_et": pre_anchor_start,
-        "p0_time_et": p0,
-        "p1_time_et": p1,
+        "window_start_et": start,
+        "window_end_et": end,
+        "window_label": "休市新闻窗口",
+        "pre_anchor_start_et": start,
+        "p0_time_et": _ensure_et(p0) if p0 is not None else None,
+        "p1_time_et": _first_datetime(
+            sample,
+            raw,
+            (
+                "p1_time",
+                "binance_max_time",
+                "binance_weekend_max_time",
+                "weekend_max_time",
+                "contract_sample_time",
+                "binance_high_time",
+            ),
+        ),
         "pre_overnight_end_et": end,
         "p2_or_session_time_et": end,
         "labels": WINDOW_LABELS,
@@ -242,27 +276,41 @@ def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None 
 
 
 def split_news_by_weekend_windows(items: Iterable[dict[str, Any]], windows: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    buckets = {key: [] for key in WINDOW_LABELS}
+    buckets = _legacy_window_news([])
     if not windows.get("ok"):
         return buckets
-    pre_start = windows["pre_anchor_start_et"]
-    p0 = windows["p0_time_et"]
-    p1 = windows["p1_time_et"]
-    end = windows["pre_overnight_end_et"]
+    start = windows.get("window_start_et") or windows.get("pre_anchor_start_et")
+    end = windows.get("window_end_et") or windows.get("pre_overnight_end_et")
+    if start is None or end is None:
+        return buckets
     for item in items:
         published = _parse_datetime(item.get("published_at_et") or item.get("published_at"))
         if published is None:
             continue
         published = _ensure_et(published)
-        if pre_start <= published < p0:
-            buckets[WINDOW_PRE_ANCHOR].append(item)
-        elif p0 <= published <= p1:
+        if start <= published <= end:
+            buckets[WINDOW_CLOSED_MARKET].append(item)
             buckets[WINDOW_AFTER_P0].append(item)
-        elif p1 < published <= end:
-            buckets[WINDOW_PRE_OVERNIGHT].append(item)
     for key in buckets:
-        buckets[key].sort(key=lambda row: str(row.get("published_at") or row.get("fetched_at") or ""), reverse=True)
+        buckets[key] = _sort_news_desc(buckets[key])
     return buckets
+
+
+def _legacy_window_news(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        WINDOW_CLOSED_MARKET: list(items),
+        WINDOW_PRE_ANCHOR: [],
+        WINDOW_AFTER_P0: list(items),
+        WINDOW_PRE_OVERNIGHT: [],
+    }
+
+
+def _sort_news_desc(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        list(items),
+        key=lambda row: str(row.get("published_at") or row.get("published_at_et") or row.get("fetched_at") or ""),
+        reverse=True,
+    )
 
 
 def weekend_spread_news_label(symbol: str, sample: dict[str, Any], *, store: "WeekendSpreadNewsStore | None" = None) -> str:
@@ -541,6 +589,25 @@ def _first_datetime(primary: dict[str, Any], secondary: dict[str, Any], keys: tu
             parsed = _parse_datetime(source.get(key))
             if parsed is not None:
                 return parsed
+    return None
+
+
+def _first_date(primary: dict[str, Any], secondary: dict[str, Any], keys: tuple[str, ...]) -> date | None:
+    for source in (primary, secondary):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, datetime):
+                return _ensure_et(value).date()
+            text = str(value or "").strip()
+            if not text:
+                continue
+            parsed = _parse_datetime(text)
+            if parsed is not None:
+                return _ensure_et(parsed).date()
+            try:
+                return datetime.fromisoformat(text[:10]).date()
+            except ValueError:
+                continue
     return None
 
 
