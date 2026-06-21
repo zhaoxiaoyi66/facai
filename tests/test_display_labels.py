@@ -9,11 +9,14 @@ def test_display_label_localizes_known_internal_fields() -> None:
     assert display_label("confirmed") == "人工锁定"
     assert display_label("DATA_MISSING") == "数据缺失"
     assert display_label("DATA_INSUFFICIENT") == "数据不足"
+    assert display_label("N/A") == "缺少数据"
+    assert display_label("unknown") == "待确认"
+    assert display_label("UNKNOWN") == "待确认"
     assert display_label(None) == "缺少数据"
 
 
 def test_replace_display_terms_replaces_whole_internal_tokens_only() -> None:
-    text = "AI Stock Radar Research / anchor_source / DATA_MISSING / None / candidate / confirmed"
+    text = "AI Stock Radar Research / anchor_source / DATA_MISSING / None / N/A / unknown / candidate / confirmed"
 
     localized = replace_display_terms(text)
 
@@ -21,6 +24,7 @@ def test_replace_display_terms_replaces_whole_internal_tokens_only() -> None:
     assert "锚点来源" in localized
     assert "数据缺失" in localized
     assert "缺少数据" in localized
+    assert "待确认" in localized
     assert "自动匹配" in localized
     assert "人工锁定" in localized
 
