@@ -4507,7 +4507,7 @@ def _localize_report_text(text: str) -> str:
         "WAIT_CONFIRMATION": "等待确认",
         "BLOCK_CHASE": "追高风险提示",
         "DATA_INSUFFICIENT": "数据不足",
-        "DATA_MISSING": "数据不足",
+        "DATA_MISSING": "数据缺失",
         "ALLOW_BUY": "小仓观察建议",
         "AVOID": "暂不参与",
         "HOLD_NO_ADD": "仓位偏高，不建议继续加",

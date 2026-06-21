@@ -1919,9 +1919,11 @@ def test_ai_radar_fallback_action_copy_uses_advisory_language() -> None:
 
     rating = radar_ui._rating_text({}, action_result, {})
     localized = radar_ui._localize_report_text("ALLOW_BUY")
+    missing = radar_ui._localize_report_text("DATA_MISSING")
 
     assert rating == "小仓观察建议"
     assert localized == "小仓观察建议"
+    assert missing == "数据缺失"
     assert "允许" not in rating
     assert "允许" not in localized
 
