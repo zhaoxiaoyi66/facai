@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -94,6 +95,12 @@ def test_news_symbol_label_uses_chinese_placeholders() -> None:
     assert _news_symbol_label(None) == "未标明股票"
     assert _news_symbol_label("MARKET") == "市场新闻"
     assert _news_symbol_label("NVDA") == "NVDA"
+
+
+def test_weekend_review_does_not_render_missing_symbol_as_none() -> None:
+    source = inspect.getsource(__import__("ui.news_radar", fromlist=["_render_weekend_review"])._render_weekend_review)
+
+    assert '_news_symbol_label(_clean(item.get("symbol")))' in source
 
 
 def test_fmp_news_missing_key_copy_hides_env_key_name() -> None:

@@ -317,7 +317,8 @@ def _render_weekend_review(symbols: list[str], *, store: NewsRadarStore) -> None
         if major:
             for item in major[:8]:
                 title_zh, original_title, _ = _title_parts(item)
-                st.markdown(f"- **{item.get('symbol')}**｜{title_zh} · {source_link_text(item)}")
+                symbol_label = _news_symbol_label(_clean(item.get("symbol")))
+                st.markdown(f"- **{symbol_label}**｜{title_zh} · {source_link_text(item)}")
         unexplained = review.get("unexplained_price_moves", [])
         if unexplained:
             st.write(f"价格波动无明确新闻解释：{', '.join(unexplained[:20])}")
