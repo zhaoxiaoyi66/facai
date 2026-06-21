@@ -2032,7 +2032,7 @@ def _macro_indicator_label(indicator: str) -> str:
         "dollar_index": "美元指数",
         "hyg_credit_proxy": "信用风险代理",
         "sentiment_proxy": "内部情绪代理",
-    }.get(str(indicator or ""), str(indicator or "未知指标"))
+    }.get(str(indicator or ""), _dashboard_unknown_display_text(indicator, "未知指标"))
 
 
 def _macro_refresh_status_label(status: str) -> str:

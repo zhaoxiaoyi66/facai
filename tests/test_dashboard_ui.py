@@ -139,6 +139,8 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
 
 
 def test_dashboard_refresh_status_labels_do_not_show_raw_internal_codes() -> None:
+    assert dashboard._macro_indicator_label("NEW_MACRO_INDICATOR") == "未知指标"
+    assert dashboard._macro_indicator_label("人工指标") == "人工指标"
     assert dashboard._macro_refresh_status_label("NEW_MACRO_STATUS") == "未知"
     assert dashboard._macro_refresh_indicator_status_label("NEW_INDICATOR_STATUS") == "未知"
     assert dashboard._macro_refresh_status_label("人工复核") == "人工复核"
