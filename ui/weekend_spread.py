@@ -5424,7 +5424,7 @@ def _backtest_mode_text(value: object) -> str:
         "verified_mapping": "已验证映射",
         "confirmed": "\u4eba\u5de5\u9501\u5b9a",
         "manual_locked": "\u4eba\u5de5\u9501\u5b9a",
-    }.get(text, str(value or ""))
+    }.get(text, _unknown_display_text(value, "映射待确认"))
 
 
 def _backtest_run_button_label(weeks: object) -> str:

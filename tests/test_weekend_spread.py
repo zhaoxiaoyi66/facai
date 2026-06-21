@@ -1511,6 +1511,7 @@ def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
         weekend_spread._monitor_priority_short({"monitor_priority_label": "NEW_PRIORITY"}),
         weekend_spread._localized_realtime_error("NEW_REALTIME_ERROR"),
         weekend_spread._clean_self_check_text("NEW_SELF_CHECK_STATUS", "自检状态待确认"),
+        weekend_spread._backtest_mode_text("NEW_BACKTEST_MODE"),
     ]
 
     assert labels == [
@@ -1528,10 +1529,12 @@ def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
         "数据不足",
         "未识别实时价格错误",
         "自检状态待确认",
+        "映射待确认",
     ]
     assert weekend_spread._p2_source_summary({"broker_open_close": None, "failure_reason": "NEW_FAILURE_REASON"}) == "未识别失败原因"
     assert weekend_spread._data_quality_text("人工复核") == "人工复核"
     assert weekend_spread._monitor_log_status_text("人工复核") == "人工复核"
+    assert weekend_spread._backtest_mode_text("人工映射") == "人工映射"
     assert weekend_spread._monitor_source_text("") == "未记录来源"
     assert weekend_spread._monitor_source_text("NEW_MONITOR_SOURCE") == "未识别来源"
     assert weekend_spread._clean_self_check_text("Alpaca BOATS", "自检状态待确认") == "Alpaca BOATS"
