@@ -96,6 +96,24 @@ def test_trade_activity_monthly_calendar_and_day_html_render_counts() -> None:
     assert "$200.00" in day_html
 
 
+def test_trade_activity_ui_localizes_advisory_levels() -> None:
+    trades = [
+        _trade("NVDA", "buy", "2026-06-15T09:00:00+08:00"),
+        _trade("MSFT", "sell", "2026-06-15T10:00:00+08:00", advisory_level="HIGH_RISK"),
+    ]
+
+    calendar = build_monthly_trade_calendar(2026, 6, trades)
+    html = trade_journal._trade_activity_calendar_html(calendar)
+    day_html = trade_journal._trade_activity_day_table_html(trades)
+
+    assert "正常" in html
+    assert "高风险" in day_html
+    assert ">LOW<" not in html
+    assert "HIGH_RISK" not in day_html
+    assert trade_journal._trade_advisory_level_text("NEW_INTERNAL_LEVEL") == "待复核"
+    assert trade_journal._trade_advisory_level_text("人工风险") == "人工风险"
+
+
 def test_trade_activity_ui_is_advisory_only_and_advanced_calendar_tab_exists() -> None:
     render_source = inspect.getsource(trade_journal.render)
     editor_source = inspect.getsource(trade_journal._render_editor)

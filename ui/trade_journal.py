@@ -325,6 +325,7 @@ def _trade_activity_calendar_html(calendar: dict) -> str:
             key = f"{year:04d}-{month:02d}-{day_number:02d}"
             day = days.get(key, {})
             level = str(day.get("advisory_level") or "LOW").lower()
+            level_text = _trade_advisory_level_text(day.get("advisory_level") or "LOW")
             decision_count = int(day.get("trade_decision_count") or 0)
             record_count = int(day.get("trade_record_count") or 0)
             buy_count = int(day.get("buy_count") or 0)
@@ -336,7 +337,7 @@ def _trade_activity_calendar_html(calendar: dict) -> str:
                 f"<b>{day_number}</b>"
                 f"<span>{decision_count} 决策 / {record_count} 记录</span>"
                 f"<em>买 {buy_count}｜卖 {sell_count}</em>"
-                f"<strong>{escape(str(day.get('advisory_level') or 'LOW'))}</strong>"
+                f"<strong>{escape(level_text)}</strong>"
                 "</a></td>"
             )
         rows.append(f"<tr>{''.join(cells)}</tr>")
@@ -377,6 +378,9 @@ def _trade_activity_day_table_html(trades: list[dict]) -> str:
         quantity = _number(trade.get("quantity")) or 0
         price = _number(trade.get("price")) or 0
         notional = quantity * price
+        advisory_level = _trade_advisory_level_text(
+            trade.get("daily_trade_advisory_level") or trade.get("advisory_level") or trade.get("sell_warning_level")
+        )
         rows.append(
             "<tr>"
             f"<td>{escape(_activity_time_text(trade))}</td>"
@@ -386,7 +390,7 @@ def _trade_activity_day_table_html(trades: list[dict]) -> str:
             f"<td>{format_currency(price)}</td>"
             f"<td>{format_currency(notional)}</td>"
             f"<td>{escape(_sell_reason_text(trade.get('sell_reason_type')))}</td>"
-            f"<td>{escape(str(trade.get('daily_trade_advisory_level') or trade.get('advisory_level') or trade.get('sell_warning_level') or ''))}</td>"
+            f"<td>{escape(advisory_level)}</td>"
             f"<td>{escape(str(trade.get('notes') or ''))}</td>"
             "</tr>"
         )
@@ -4168,6 +4172,21 @@ def _trade_unknown_display_text(value: object, fallback: str) -> str:
     if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
         return fallback
     return text
+
+
+def _trade_advisory_level_text(value: object) -> str:
+    text = str(value or "").strip()
+    normalized = text.upper().replace("-", "_").replace(" ", "_")
+    labels = {
+        "LOW": "正常",
+        "INFO": "提醒",
+        "MEDIUM": "留意",
+        "HIGH": "高风险",
+        "HIGH_RISK": "高风险",
+        "CRITICAL": "严重",
+        "DANGER": "高风险",
+    }
+    return labels.get(normalized, _trade_unknown_display_text(value, "待复核"))
 
 
 def _signal_snapshot_outcomes_html(
