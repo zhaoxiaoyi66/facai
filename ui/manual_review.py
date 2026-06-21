@@ -604,7 +604,7 @@ def _cn_item_type(value: object) -> str:
         "qualitative_risk": "定性风险复核",
         "analyst_estimate_needed": "需要分析师预期",
         "manual_override_needed": "建议人工补充",
-    }.get(str(value or ""), str(value or "未归类"))
+    }.get(str(value or ""), _manual_review_unknown_display_text(value, "未归类"))
 
 
 def _cn_ai_triage(value: object) -> str:
@@ -629,7 +629,7 @@ def _cn_match(value: object) -> str:
         "no_evidence": "证据不足",
         "exact": "明确",
         "ambiguous": "不明确",
-    }.get(str(value or ""), str(value or "不明确"))
+    }.get(str(value or ""), _manual_review_unknown_display_text(value, "不明确"))
 
 
 def _triage_tone(value: str) -> str:
