@@ -2038,7 +2038,7 @@ def _macro_indicator_label(indicator: str) -> str:
 def _macro_refresh_status_label(status: str) -> str:
     return {"success": "成功", "partial": "部分成功", "failed": "失败"}.get(
         status,
-        _dashboard_unknown_display_text(status, "未知"),
+        _dashboard_unknown_display_text(status, "待确认"),
     )
 
 
@@ -2058,7 +2058,7 @@ def _macro_refresh_indicator_status_label(status: str) -> str:
         "cached_fallback": "使用缓存",
         "stale": "过期",
         "skipped": "跳过",
-    }.get(status, _dashboard_unknown_display_text(status, "未知"))
+    }.get(status, _dashboard_unknown_display_text(status, "待确认"))
 
 
 def _macro_refresh_indicator_display_status(item: dict) -> str:
