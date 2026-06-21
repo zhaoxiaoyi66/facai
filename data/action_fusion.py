@@ -65,6 +65,15 @@ LEFT_SIDE_ACTION_LABELS = {
     POSITION_LIMITED: "仓位接近上限，建议控制节奏",
 }
 
+def _fusion_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-", "^", ".", " ", "&"}) for char in text):
+        return fallback
+    return text
+
+
 ROLE_LEFT_SIDE_CAP_RATIOS = {
     "ai_core": 0.80,
     "ai_hardware_core": 0.70,
@@ -721,7 +730,7 @@ def _left_plan(
     return {
         "action_code": action_code,
         "allowed": allowed,
-        "action_cn": LEFT_SIDE_ACTION_LABELS.get(action_code, action_code),
+        "action_cn": LEFT_SIDE_ACTION_LABELS.get(action_code, _fusion_unknown_display_text(action_code, "等待复核")),
         "probe_size_cn": probe_size_cn,
         "add_levels_cn": add_levels_cn,
         "right_confirm_trigger_cn": right_confirm_trigger_cn,
@@ -860,7 +869,10 @@ def _evidence(
         items.append(f"观察区 {_money(observation_low)} - {_money(observation_high)}。")
     if volume_status:
         score_text = "" if volume_score is None else f" {volume_score:g}分"
-        volume_label = VOLUME_STATUS_LABELS.get(str(volume_status).upper(), str(volume_status))
+        volume_label = VOLUME_STATUS_LABELS.get(
+            str(volume_status).upper(),
+            _fusion_unknown_display_text(volume_status, "量价待确认"),
+        )
         items.append(f"量价承接 {volume_label}{score_text}，{volume_regime or '量能待确认'}。")
     if quality_score is not None:
         items.append(f"质量/综合分 {quality_score:g}。")

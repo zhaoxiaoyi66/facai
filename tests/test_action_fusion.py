@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data import action_fusion as action_fusion_module
 from data.action_fusion import (
     ALLOW_SMALL_BUY,
     BLOCK_CHASE,
@@ -385,6 +386,20 @@ def test_action_fusion_visible_text_has_no_mojibake() -> None:
     assert "系统建议" in visible_text
     assert "左侧计划" in visible_text
     assert not any(token in visible_text for token in ("\u934f", "\u93b6", "\u6d93", "\u74d2", "\u7edb"))
+
+
+def test_action_fusion_hides_unknown_internal_display_codes() -> None:
+    result = evaluate_action_fusion(
+        ticker="MSFT",
+        context=_base(volume_price_status="NEW_INTERNAL_VOLUME_STATUS", volume_price_score=52),
+        portfolio_context={"portfolio_weight": 0.0, "target_weight": 8.0, "max_weight": 12.0, "role": "ai_platform_core"},
+    )
+    html = action_fusion_card_html(result)
+    left_plan = action_fusion_module._left_plan("NEW_INTERNAL_LEFT_ACTION", False, "测试提醒")
+
+    assert "NEW_INTERNAL_VOLUME_STATUS" not in " ".join(result.evidence_bullets_cn)
+    assert "NEW_INTERNAL_VOLUME_STATUS" not in html
+    assert left_plan["action_cn"] == "等待复核"
 
 
 def test_action_fusion_prefers_nested_buy_zone_context() -> None:
