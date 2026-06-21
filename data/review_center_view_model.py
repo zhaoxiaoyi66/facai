@@ -291,7 +291,7 @@ def _has_review_value(row: dict) -> bool:
 def _present_review_value(value: object) -> bool:
     if value in (None, ""):
         return False
-    if isinstance(value, str) and value.strip().lower() in {"n/a", "na", "none", "null", "-", "--"}:
+    if isinstance(value, str) and value.strip().lower() in {"n/a", "na", "none", "null", "-", "--", "待补", "暂缺", "暂无"}:
         return False
     return True
 

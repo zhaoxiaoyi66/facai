@@ -31,6 +31,8 @@ BUSINESS_PERCENT_TOKENS = (
     "deposit",
 )
 
+MISSING_METRIC_DISPLAY = "待补"
+
 
 @dataclass(frozen=True)
 class NormalizedMetricValue:
@@ -66,15 +68,15 @@ def normalize_metric_value(value: object, unit: object = None, evidence_text: st
         normalized_unit = "percent"
         if numeric is not None and abs(numeric) <= 1 and not _has_explicit_percent_marker(raw, numeric, evidence_text):
             numeric = numeric * 100
-        display = "N/A" if numeric is None else f"{numeric:.1f}%"
+        display = MISSING_METRIC_DISPLAY if numeric is None else f"{numeric:.1f}%"
     elif scale == "multiple":
         normalized_unit = "x"
-        display = "N/A" if numeric is None else f"{numeric:.1f}x"
+        display = MISSING_METRIC_DISPLAY if numeric is None else f"{numeric:.1f}x"
     elif scale == "currency":
         normalized_unit = unit_text or "currency"
-        display = "N/A" if numeric is None else f"{numeric:,.1f}"
+        display = MISSING_METRIC_DISPLAY if numeric is None else f"{numeric:,.1f}"
     else:
-        display = "N/A" if numeric is None else f"{numeric:g}"
+        display = MISSING_METRIC_DISPLAY if numeric is None else f"{numeric:g}"
     return NormalizedMetricValue(raw, numeric, normalized_unit, display, scale)
 
 

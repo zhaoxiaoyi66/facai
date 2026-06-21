@@ -383,7 +383,7 @@ def _format_value(value: object, unit: object) -> str:
 
 def _review_display_text(value: object, fallback: str = "待补") -> str:
     text = str(value or "").strip()
-    if text.lower() in {"", "n/a", "na", "none", "null", "nan"}:
+    if text.lower() in {"", "n/a", "na", "none", "null", "nan", "待补", "暂缺", "暂无"}:
         return fallback
     return text
 

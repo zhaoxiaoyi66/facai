@@ -32,6 +32,11 @@ def test_review_center_duplicate_summary_is_localized() -> None:
     assert "weak-evidence" not in representative.item["duplicateSummary"]
 
 
+def test_review_center_treats_localized_missing_values_as_missing() -> None:
+    for value in ("待补", "暂缺", "暂无"):
+        assert view_model._present_review_value(value) is False
+
+
 def _row(item: dict) -> view_model._ReviewCenterRow:
     return view_model._ReviewCenterRow(
         row=dict(item),

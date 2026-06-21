@@ -396,7 +396,7 @@ class ReviewCenterViewModelTests(unittest.TestCase):
         self.assertEqual(len(main_crpo), 1)
         self.assertEqual(main_crpo[0]["metricKey"], "cRpoGrowthReported")
         self.assertEqual(main_crpo[0]["duplicateCount"], 3)
-        self.assertIn("historical", main_crpo[0]["duplicateSummary"])
+        self.assertIn("历史值", main_crpo[0]["duplicateSummary"])
         self.assertEqual([item["canonicalMetric"] for item in groups["insufficientEvidence"]["items"]], [])
         self.assertIn("cRpoGrowthReported", [item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]])
 

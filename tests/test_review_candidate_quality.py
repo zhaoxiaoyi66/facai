@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from data.review_candidate_quality import current_value_override
+from data.review_candidate_quality import has_review_value
 from data.review_candidate_quality import is_current_revenue_backlog_candidate
 from data.review_candidate_quality import is_risk_observation_item
 
@@ -48,3 +49,9 @@ def test_current_revenue_backlog_is_kept_as_main_candidate_without_becoming_rpo(
     }
 
     assert is_current_revenue_backlog_candidate(row, ACTIVE_STATUSES)
+
+
+def test_localized_missing_display_value_is_not_review_value() -> None:
+    assert not has_review_value({"displayValue": "待补"})
+    assert not has_review_value({"displayValue": "暂缺"})
+    assert not has_review_value({"displayValue": "暂无"})
