@@ -1464,7 +1464,7 @@ def _buy_plan_alert_status_text(alert: dict) -> str:
         "deleted": "已删除",
     }
     trigger = _money_text(alert.get("triggerPrice"))
-    return f"{labels.get(status, _portfolio_unknown_display_text(status, '未知'))}｜{trigger}"
+    return f"{labels.get(status, _portfolio_unknown_display_text(status, '未识别状态'))}｜{trigger}"
 
 
 def _buy_plan_plan_status_text(plan: dict) -> str:

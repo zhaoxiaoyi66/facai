@@ -80,7 +80,7 @@ def test_portfolio_labels_do_not_show_raw_internal_codes() -> None:
 
 
 def test_portfolio_reason_labels_do_not_show_raw_internal_codes() -> None:
-    assert portfolio_ui._buy_plan_alert_status_text({"status": "NEW_ALERT_STATUS", "triggerPrice": 185}) == "未知｜$185.00"
+    assert portfolio_ui._buy_plan_alert_status_text({"status": "NEW_ALERT_STATUS", "triggerPrice": 185}) == "未识别状态｜$185.00"
     assert portfolio_ui._reconciliation_reason_text({"reasons": ["NEW_RECON_REASON"]}) == "其他原因"
     assert portfolio_ui._portfolio_buy_plan_reasons({"plan_match_status": "NEW_PLAN_STATUS"}) == ["其他原因"]
     assert portfolio_ui._portfolio_starter_reasons({"starter_match_status": "NEW_STARTER_STATUS"}) == []
