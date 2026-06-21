@@ -1520,8 +1520,9 @@ def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
         "盘后锚点来源缺失",
         "未知",
         "数据不足",
-        "未知错误",
+        "未识别实时价格错误",
     ]
+    assert weekend_spread._p2_source_summary({"broker_open_close": None, "failure_reason": "NEW_FAILURE_REASON"}) == "未识别失败原因"
     assert weekend_spread._data_quality_text("人工复核") == "人工复核"
     assert weekend_spread._monitor_log_status_text("人工复核") == "人工复核"
     for label in labels:

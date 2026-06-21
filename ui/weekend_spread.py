@@ -5913,7 +5913,7 @@ def _p2_source_summary(row: dict) -> str:
             localized = _data_quality_text(reason_code)
             if localized != "未知数据状态":
                 return localized
-            return _unknown_display_text(reason, "未知失败原因")
+            return _unknown_display_text(reason, "未识别失败原因")
         quality = str(row.get("data_quality") or (row.get("raw_row") or {}).get("transmission_data_quality") or "").strip().upper()
         if quality == "OVERNIGHT_PROVIDER_MISSING":
             return "美股夜盘数据源未配置"
@@ -8691,7 +8691,7 @@ def _localized_realtime_error(value: object) -> str:
         "invalid_symbol": "Binance 合约无效",
         "binance_price_missing": "Binance 价格缺失",
         "NO_MAPPING": "无映射",
-    }.get(text, _unknown_display_text(text, "未知错误"))
+    }.get(text, _unknown_display_text(text, "未识别实时价格错误"))
 
 
 def _short_hkt_time(value: object) -> str:
