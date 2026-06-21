@@ -1982,7 +1982,7 @@ def _translated_reasons(value: object) -> list[str]:
         "risk_rating": "风险评级",
     }
     items = value if isinstance(value, list) else []
-    return [labels.get(str(item), str(item)) for item in items]
+    return [labels.get(str(item), _portfolio_unknown_display_text(item, "其他原因")) for item in items]
 
 
 def _trim_prices_text(row: dict) -> str:
