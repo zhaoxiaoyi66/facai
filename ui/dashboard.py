@@ -2222,8 +2222,8 @@ def _refresh_data_health_symbol(symbol: str) -> dict[str, str]:
         return {
             "symbol": normalized_symbol,
             "status": "failed",
-            "quoteStatus": "unknown",
-            "historyStatus": "unknown",
+            "quoteStatus": "not_run",
+            "historyStatus": "not_run",
             "error": "刷新服务返回异常",
         }
     cache_keys_invalidated = _sync_refreshed_symbol_to_dashboard_session(normalized_symbol)
@@ -2231,8 +2231,8 @@ def _refresh_data_health_symbol(symbol: str) -> dict[str, str]:
     return {
         "symbol": str(result.get("symbol") or normalized_symbol),
         "status": str(result.get("status") or "failed"),
-        "quoteStatus": str(result.get("quoteStatus") or "unknown"),
-        "historyStatus": str(result.get("historyStatus") or "unknown"),
+        "quoteStatus": str(result.get("quoteStatus") or "not_run"),
+        "historyStatus": str(result.get("historyStatus") or "not_run"),
         "error": str(result.get("error") or "无"),
         "company": str(after.get("company_name") or "待补"),
         "sector": str(after.get("sector") or after.get("industry") or "待补"),

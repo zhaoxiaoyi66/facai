@@ -138,6 +138,18 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
     assert dashboard._refresh_part_status_label("NEW_REFRESH_STATUS") == "待补"
 
 
+def test_data_health_refresh_malformed_result_uses_clear_substatus(monkeypatch) -> None:
+    monkeypatch.setattr(dashboard, "refresh_symbol_market_data", lambda symbol: ["bad"])
+
+    result = dashboard._refresh_data_health_symbol("NOW")
+
+    assert result["status"] == "failed"
+    assert result["quoteStatus"] == "not_run"
+    assert result["historyStatus"] == "not_run"
+    assert dashboard._refresh_part_status_label(result["quoteStatus"]) == "未执行"
+    assert dashboard._refresh_part_status_label(result["historyStatus"]) == "未执行"
+
+
 def test_dashboard_refresh_status_labels_do_not_show_raw_internal_codes() -> None:
     assert dashboard._macro_indicator_label("NEW_MACRO_INDICATOR") == "未知指标"
     assert dashboard._macro_indicator_label("人工指标") == "人工指标"
