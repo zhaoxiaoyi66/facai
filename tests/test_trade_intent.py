@@ -6,6 +6,8 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from data.trade_intent import (
     BUY_BEHAVIOR_OPTIONS,
     BUY_INTENT_QUESTIONS,
@@ -56,6 +58,22 @@ def test_trade_intent_store_persists_pre_trade_choices() -> None:
         assert row[2] == "[]"
         assert row[3] == "市场重新定价 / 事件催化"
         assert row[4].startswith("右侧事件买入")
+
+
+def test_trade_intent_store_validation_errors_are_chinese() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = TradeIntentStore(Path(tmpdir) / "intent.sqlite")
+        payload = {
+            "intent_side": "buy",
+            "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[0],
+            "trade_behavior_self_judgment": BUY_BEHAVIOR_OPTIONS[0],
+        }
+
+        with pytest.raises(ValueError, match="缺少有效交易记录ID"):
+            store.save_intent(0, "NVDA", "buy", payload)
+
+        with pytest.raises(ValueError, match="缺少有效交易记录ID"):
+            store.save_intent("not-an-id", "NVDA", "buy", payload)
 
 
 def test_trade_intent_store_persists_portfolio_role_snapshot() -> None:

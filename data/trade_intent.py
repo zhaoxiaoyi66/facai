@@ -401,9 +401,7 @@ class TradeIntentStore:
         source: str = "trade_entry",
         snapshots: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        clean_id = int(trade_entry_id)
-        if clean_id <= 0:
-            raise ValueError("trade_entry_id is required")
+        clean_id = _clean_trade_entry_id(trade_entry_id)
         normalized = normalize_trade_intent_payload(intent)
         if not normalized:
             return {}
@@ -563,6 +561,16 @@ class TradeIntentStore:
             rows = cursor.fetchall()
             columns = [item[0] for item in cursor.description] if cursor.description else []
         return [_review_row_to_dict(columns, row) for row in rows]
+
+
+def _clean_trade_entry_id(value: object) -> int:
+    try:
+        clean_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("缺少有效交易记录ID") from exc
+    if clean_id <= 0:
+        raise ValueError("缺少有效交易记录ID")
+    return clean_id
 
 
 def build_trade_intent_review_stats(
