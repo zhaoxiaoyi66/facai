@@ -216,6 +216,7 @@ def build_weekend_backtest_preflight(
         normalized_tickers = [ticker for ticker in normalized_tickers if ticker == selected_filter]
     eligible: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
+    sample_skips: list[dict[str, Any]] = []
     for ticker in normalized_tickers:
         config = effective_mapping.get(ticker)
         row = {
@@ -249,9 +250,19 @@ def build_weekend_backtest_preflight(
         else:
             row["mapping_status"] = mapping_status or MAPPING_AVAILABLE
         if anchor_price is None or anchor_price <= 0:
-            row["exclusion_reason"] = "NO_AFTERHOURS_ANCHOR"
-            excluded.append(row)
-            continue
+            row["current_sample_status"] = "INCOMPLETE"
+            row["current_sample_skip_reason"] = "NO_AFTERHOURS_ANCHOR"
+            sample_skips.append(
+                {
+                    "ticker": ticker,
+                    "symbol": symbol,
+                    "market_type": row.get("market_type") or "usdm_futures",
+                    "mapping_status": row.get("mapping_status") or "",
+                    "week_id": "CURRENT",
+                    "sample_skip_reason": "NO_AFTERHOURS_ANCHOR",
+                    "sample_action": "SKIP_CURRENT_WEEK",
+                }
+            )
         if not symbol:
             row["exclusion_reason"] = "NO_MAPPING"
             excluded.append(row)
@@ -269,11 +280,45 @@ def build_weekend_backtest_preflight(
         "excluded": excluded,
         "excluded_count": len(excluded),
         "eligible_count": len(eligible),
+        "sample_skips": sample_skips,
+        "sample_skip_count": len(sample_skips),
+        "complete_sample_count": len(eligible),
         "can_run": bool(eligible),
         "primary_block_reason": primary_block,
         "include_unconfirmed": bool(include_unconfirmed),
         "mode": "verified mapping",
     }
+
+
+def _complete_backtest_sample(row: dict[str, Any]) -> bool:
+    p0 = _number(row.get("friday_afterhours_close") or row.get("last_trading_day_afterhours_close"))
+    p1 = _number(row.get("binance_equivalent_max") or row.get("binance_weekend_max") or row.get("binance_weekend_max_price"))
+    p2 = _number(row.get("p2_first_valid_close") or row.get("overnight_first_1m_close") or row.get("broker_first_1m_close"))
+    return bool(p0 is not None and p0 > 0 and p1 is not None and p1 > 0 and p2 is not None and p2 > 0)
+
+
+def _incomplete_backtest_sample_reason(row: dict[str, Any]) -> str:
+    p0 = _number(row.get("friday_afterhours_close") or row.get("last_trading_day_afterhours_close"))
+    if p0 is None or p0 <= 0:
+        return "MISSING_P0"
+    p1 = _number(row.get("binance_equivalent_max") or row.get("binance_weekend_max") or row.get("binance_weekend_max_price"))
+    if p1 is None or p1 <= 0:
+        return "MISSING_P1"
+    p2 = _number(row.get("p2_first_valid_close") or row.get("overnight_first_1m_close") or row.get("broker_first_1m_close"))
+    if p2 is None or p2 <= 0:
+        return "MISSING_P2"
+    return "INCOMPLETE_SAMPLE"
+
+
+def _mark_incomplete_backtest_sample(row: dict[str, Any]) -> dict[str, Any]:
+    marked = dict(row)
+    reason = _incomplete_backtest_sample_reason(marked)
+    marked["is_sample_skip"] = True
+    marked["sample_skip_reason_code"] = reason
+    marked["sample_action"] = "SKIP_INCOMPLETE_WEEK"
+    marked["sample_status"] = "SKIPPED"
+    marked["skip_scope"] = "sample"
+    return marked
 
 
 def recent_weekend_windows(*, weeks: int = 4, now: datetime | None = None) -> list[WeekendWindow]:
@@ -392,6 +437,8 @@ def run_weekend_basis_backtest(
     kline_cache_path: Path | None = None,
     strategy_config: BasisStrategyConfig | None = None,
     now: datetime | None = None,
+    collect_complete_samples: bool = False,
+    sample_buffer_weeks: int = 8,
 ) -> list[dict[str, Any]]:
     normalized_tickers = _normalize_tickers(tickers)
     effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
@@ -400,31 +447,56 @@ def run_weekend_basis_backtest(
     effective_kline_cache_path = kline_cache_path
     if effective_kline_cache_path is None and provider is None:
         effective_kline_cache_path = DEFAULT_BACKTEST_KLINE_CACHE_PATH
-    windows = recent_weekend_windows(weeks=weeks, now=now)
+    requested_weeks = max(1, int(weeks or 1))
+    windows = recent_weekend_windows(
+        weeks=requested_weeks + max(0, int(sample_buffer_weeks or 0)) if collect_complete_samples else requested_weeks,
+        now=now,
+    )
     rows: list[dict[str, Any]] = []
     for ticker in normalized_tickers:
         config = effective_mapping.get(ticker)
         if not config or not config.get("enabled", True) or not config.get("binance_symbol"):
             continue
+        complete_rows: list[dict[str, Any]] = []
+        skipped_rows: list[dict[str, Any]] = []
         for window in windows:
-            rows.append(
-                _basis_backtest_one_window(
-                    ticker,
-                    config,
-                    window,
-                    anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
-                    anchor_source=dict(effective_anchors.get(ticker) or config),
-                    provider=price_provider,
-                    broker_provider=overnight_provider or broker_provider,
-                    afterhours_provider=afterhours_provider,
-                    open_window_minutes=open_window_minutes,
-                    opening_anchor=opening_anchor,
-                    allow_anchor_fallback=allow_anchor_fallback,
-                    require_exact_broker_open=require_exact_broker_open,
-                    kline_cache_path=effective_kline_cache_path,
-                    strategy_config=strategy_config,
-                )
+            row = _basis_backtest_one_window(
+                ticker,
+                config,
+                window,
+                anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
+                anchor_source=dict(effective_anchors.get(ticker) or config),
+                provider=price_provider,
+                broker_provider=overnight_provider or broker_provider,
+                afterhours_provider=afterhours_provider,
+                open_window_minutes=open_window_minutes,
+                opening_anchor=opening_anchor,
+                allow_anchor_fallback=allow_anchor_fallback,
+                require_exact_broker_open=require_exact_broker_open,
+                kline_cache_path=effective_kline_cache_path,
+                strategy_config=strategy_config,
             )
+            if not collect_complete_samples:
+                rows.append(row)
+                continue
+            row["requested_complete_sample_count"] = requested_weeks
+            if _complete_backtest_sample(row):
+                row["is_sample_skip"] = False
+                complete_rows.append(row)
+                if len(complete_rows) >= requested_weeks:
+                    break
+            else:
+                skipped_rows.append(_mark_incomplete_backtest_sample(row))
+        if collect_complete_samples:
+            complete_count = len(complete_rows)
+            for row in complete_rows:
+                row["complete_sample_count"] = complete_count
+                row["skipped_incomplete_sample_count"] = len(skipped_rows)
+            for row in skipped_rows:
+                row["complete_sample_count"] = complete_count
+                row["skipped_incomplete_sample_count"] = len(skipped_rows)
+            rows.extend(complete_rows)
+            rows.extend(skipped_rows)
     return rows
 
 
