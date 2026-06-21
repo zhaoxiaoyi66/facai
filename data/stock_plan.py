@@ -203,7 +203,7 @@ class StockPlanStore:
     def close_plan(self, ticker: str, status: str, note: str = "") -> dict:
         clean_status = _clean_plan_status(status)
         if clean_status not in INACTIVE_PLAN_STATUSES:
-            raise ValueError("plan close status must be completed, cancelled, or expired")
+            raise ValueError("计划关闭状态必须是已执行、已取消或已失效")
         plan = self.get_plan(ticker)
         if not _has_plan_content(plan):
             return plan

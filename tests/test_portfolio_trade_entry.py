@@ -398,6 +398,14 @@ def test_closing_buy_plan_marks_it_inactive_for_current_plan_ui() -> None:
         assert alert["status"] == "disabled"
 
 
+def test_stock_plan_close_invalid_status_error_is_chinese() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = StockPlanStore(Path(tmpdir) / "cache.sqlite")
+
+        with pytest.raises(ValueError, match="计划关闭状态必须是已执行、已取消或已失效"):
+            store.close_plan("ADBE", "active")
+
+
 def test_stock_plan_status_requires_thesis_and_invalidation() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
