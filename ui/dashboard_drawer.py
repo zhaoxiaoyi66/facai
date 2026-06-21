@@ -1495,7 +1495,7 @@ def _technical_missing_field_label(field: str) -> str:
         "recent_breakout_level": "breakout level",
         "nearby_support": "附近支撑",
         "data_status": "有效技术缓存",
-    }.get(str(field), str(field))
+    }.get(str(field), _drawer_unknown_display_text(field, "关键字段"))
 
 
 def _strip_missing_prefix(text: str) -> str:

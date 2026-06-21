@@ -46,6 +46,8 @@ def test_drawer_labels_do_not_show_raw_internal_codes() -> None:
     assert dashboard_drawer._drawer_compact_action_text("人工复核") == "等突破再评估"
     assert dashboard_drawer._short_action_for_sentence("NEW_ACTION_CODE") == "等待回踩"
     assert dashboard_drawer._short_action_for_sentence("人工复核") == "等突破再评估"
+    assert dashboard_drawer._technical_missing_field_label("NEW_INTERNAL_FIELD") == "关键字段"
+    assert dashboard_drawer._technical_missing_field_label("人工字段") == "人工字段"
 
 
 def test_drawer_distinguishes_missing_data_from_insufficient_data() -> None:
