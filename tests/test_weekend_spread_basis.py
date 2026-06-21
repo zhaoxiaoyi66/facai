@@ -403,3 +403,21 @@ def test_basis_task_installer_uses_silent_scheduler_command() -> None:
     assert "--quiet" in source
     assert "Register-ScheduledTask" in source
     assert "-Hidden" in source
+
+
+def test_basis_task_installer_empty_failure_uses_specific_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    class EmptyFailure:
+        returncode = 1
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(basis_module.os, "name", "nt")
+    monkeypatch.setattr(basis_module, "_windowless_python_executable", lambda: Path(__file__))
+    monkeypatch.setattr(basis_module, "PROJECT_ROOT", Path(__file__).resolve().parents[1])
+    monkeypatch.setattr(basis_module.subprocess, "run", lambda *args, **kwargs: EmptyFailure())
+
+    result = basis_module.install_open_market_basis_task()
+
+    assert result["ok"] is False
+    assert "未返回错误原因" in result["message"]
+    assert "未知错误" not in result["message"]

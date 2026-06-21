@@ -432,7 +432,7 @@ def install_open_market_basis_task(*, task_name: str = DEFAULT_BASIS_TASK_NAME, 
     )
     if result.returncode != 0:
         error = (result.stderr or result.stdout or "").strip()
-        return {"ok": False, "message": f"开市基差采集任务安装失败：{error or '未知错误'}"}
+        return {"ok": False, "message": f"开市基差采集任务安装失败：{error or '未返回错误原因'}"}
     mode = "静默模式" if python_exe.name.lower() == "pythonw.exe" else "隐藏窗口模式"
     return {"ok": True, "message": f"已安装开市基差采集任务（每 5 分钟，{mode}）。"}
 
