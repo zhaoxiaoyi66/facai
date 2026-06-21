@@ -1167,14 +1167,21 @@ class DecisionLogTests(unittest.TestCase):
             decision_store = DecisionLogStore(db_path)
             trade_store = TradeJournalStore(db_path)
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as missing_symbol:
                 decision_store.save_snapshot("", {"decision_date": "2026-05-26"})
-            with self.assertRaises(ValueError):
+            self.assertEqual(str(missing_symbol.exception), "缺少股票代码")
+
+            with self.assertRaises(ValueError) as bad_price:
                 decision_store.save_snapshot("NOW", {"price": -1})
-            with self.assertRaises(ValueError):
+            self.assertEqual(str(bad_price.exception), "当前价格不能为负数")
+
+            with self.assertRaises(ValueError) as bad_action:
                 trade_store.save_entry("NOW", {"action_type": "unknown"})
-            with self.assertRaises(ValueError):
+            self.assertEqual(str(bad_action.exception), "请选择有效的交易操作类型")
+
+            with self.assertRaises(ValueError) as bad_quantity:
                 trade_store.save_entry("NOW", {"action_type": "buy", "quantity": -1})
+            self.assertEqual(str(bad_quantity.exception), "数量不能为负数")
 
     def test_decision_outcomes_calculate_returns_and_drawdown(self) -> None:
         with TemporaryDirectory() as tmpdir:

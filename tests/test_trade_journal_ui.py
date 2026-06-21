@@ -31,6 +31,13 @@ def test_signal_stats_row_hides_unknown_group_key() -> None:
     assert ">unknown<" not in html
 
 
+def test_trade_journal_friendly_error_accepts_localized_validation_messages() -> None:
+    assert trade_journal._friendly_error("请选择有效的交易操作类型") == "请选择有效的操作类型。"
+    assert trade_journal._friendly_error("当前价格需要填写数字") == "数量和价格需要填写数字。"
+    assert trade_journal._friendly_error("数量不能为负数") == "数量和价格不能为负数。"
+    assert trade_journal._friendly_error("缺少必填信息：决策快照") == "请补齐必填信息。"
+
+
 def test_trade_activity_frequency_levels_by_decision_count() -> None:
     base = "2026-06-15"
 

@@ -47,6 +47,40 @@ DECISION_ERROR_TAGS = {
     "position_too_large",
     "ignored_system_warning",
 }
+VALIDATION_FIELD_LABELS = {
+    "close": "收盘价",
+    "current_add_pct": "当前可加仓比例",
+    "decision_snapshot_id": "决策快照",
+    "end_price": "结束价格",
+    "entry_id": "交易记录",
+    "max_drawdown_pct": "最大回撤",
+    "max_position_pct": "最大仓位",
+    "plan_age_minutes": "计划更新时间",
+    "plan_max_position_pct": "计划最大仓位",
+    "plan_planned_quantity": "计划数量",
+    "plan_remaining_quantity": "计划剩余数量",
+    "plan_trigger_price": "计划触发价",
+    "pre_trade_avg_cost": "交易前平均成本",
+    "pre_trade_quantity": "交易前股数",
+    "pre_trade_target_sell_price": "交易前目标卖出价",
+    "pre_trade_total_cost": "交易前总成本",
+    "pre_trade_unrealized_pnl": "交易前浮动盈亏",
+    "premium": "权利金",
+    "price": "当前价格",
+    "quantity": "数量",
+    "return_pct": "收益率",
+    "setup_score": "结构评分",
+    "starter_max_pct": "起步仓上限",
+    "starter_position_after_pct": "起步仓后仓位",
+    "starter_position_before_pct": "起步仓前仓位",
+    "start_price": "开始价格",
+    "strike_price": "行权价",
+    "structure_score": "结构评分",
+    "target_sell_price": "目标卖出价",
+    "volume_ma20": "20日均量",
+    "volume_price_score": "量价承接评分",
+    "volume_ratio": "量比",
+}
 TRADE_DISCIPLINE_COLUMNS = {
     "decision_mood": "TEXT",
     "position_class": "TEXT",
@@ -1678,7 +1712,7 @@ def _clean_decision_snapshot(symbol: str, values: dict) -> dict:
 def _clean_trade_entry(symbol: str, values: dict) -> dict:
     action_type = str(values.get("action_type") or "").strip().lower()
     if action_type not in ACTION_TYPES:
-        raise ValueError("action_type is invalid")
+        raise ValueError("请选择有效的交易操作类型")
     cleaned = {
         "symbol": _normalize_symbol(symbol),
         "trade_date": _clean_date(values.get("trade_date")),
@@ -2279,7 +2313,7 @@ def _clean_decision_mood(value: object) -> str | None:
     if not text:
         return None
     if text not in DECISION_MOOD_TYPES:
-        raise ValueError("decision_mood is invalid")
+        raise ValueError("请选择有效的交易心理标签")
     return text
 
 
@@ -2310,7 +2344,7 @@ def _clean_error_tag(decision_snapshot_id: int, tag: str, notes: str | None) -> 
 def _clean_error_tag_name(value: str) -> str:
     tag = str(value or "").strip().lower()
     if tag not in DECISION_ERROR_TAGS:
-        raise ValueError("tag is invalid")
+        raise ValueError("请选择有效的错误标签")
     return tag
 
 
@@ -2628,15 +2662,19 @@ def _parse_date(value) -> date | None:
 def _clean_horizon(value) -> str:
     horizon = str(value or "").strip().lower()
     if horizon not in OUTCOME_HORIZONS:
-        raise ValueError("horizon is invalid")
+        raise ValueError("请选择有效的复盘周期")
     return horizon
 
 
 def _clean_outcome_status(value) -> str:
     status = str(value or "missing").strip().lower()
     if status not in {"complete", "missing"}:
-        raise ValueError("status is invalid")
+        raise ValueError("请选择有效的复盘状态")
     return status
+
+
+def _validation_field_label(field: str) -> str:
+    return VALIDATION_FIELD_LABELS.get(str(field or "").strip(), "该字段")
 
 
 def _optional_non_negative_number(value, field: str) -> float | None:
@@ -2645,9 +2683,9 @@ def _optional_non_negative_number(value, field: str) -> float | None:
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be a number") from exc
+        raise ValueError(f"{_validation_field_label(field)}需要填写数字") from exc
     if number < 0:
-        raise ValueError(f"{field} cannot be negative")
+        raise ValueError(f"{_validation_field_label(field)}不能为负数")
     return number
 
 
@@ -2680,7 +2718,7 @@ def _optional_number(value, field: str) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be a number") from exc
+        raise ValueError(f"{_validation_field_label(field)}需要填写数字") from exc
 
 
 def _optional_int(value, field: str) -> int | None:
@@ -2689,16 +2727,16 @@ def _optional_int(value, field: str) -> int | None:
     try:
         number = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be an integer") from exc
+        raise ValueError(f"{_validation_field_label(field)}需要填写整数") from exc
     if number < 0:
-        raise ValueError(f"{field} cannot be negative")
+        raise ValueError(f"{_validation_field_label(field)}不能为负数")
     return number
 
 
 def _required_int(value, field: str) -> int:
     number = _optional_int(value, field)
     if number is None:
-        raise ValueError(f"{field} is required")
+        raise ValueError(f"缺少必填信息：{_validation_field_label(field)}")
     return number
 
 

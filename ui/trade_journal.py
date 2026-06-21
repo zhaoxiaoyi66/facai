@@ -4728,16 +4728,24 @@ def _number(value: object) -> float | None:
 def _friendly_error(message: str) -> str:
     if "symbol is required" in message or "缺少股票代码" in message:
         return "请填写股票代码。"
-    if "action_type is invalid" in message:
+    if "action_type is invalid" in message or "交易操作类型" in message:
         return "请选择有效的操作类型。"
-    if "decision_mood is invalid" in message:
+    if "decision_mood is invalid" in message or "交易心理标签" in message:
         return "请选择有效的交易心理标签。"
-    if "must be a number" in message:
+    if "tag is invalid" in message or "错误标签" in message:
+        return "请选择有效的错误标签。"
+    if "horizon is invalid" in message or "复盘周期" in message:
+        return "请选择有效的复盘周期。"
+    if "status is invalid" in message or "复盘状态" in message:
+        return "请选择有效的复盘状态。"
+    if "must be a number" in message or "需要填写数字" in message:
         return "数量和价格需要填写数字。"
-    if "cannot be negative" in message:
+    if "cannot be negative" in message or "不能为负数" in message:
         return "数量和价格不能为负数。"
-    if "must be an integer" in message:
+    if "must be an integer" in message or "需要填写整数" in message:
         return "关联信号 ID 需要填写整数。"
+    if "is required" in message or "缺少必填信息" in message:
+        return "请补齐必填信息。"
     return "保存失败，请检查输入。"
 
 
