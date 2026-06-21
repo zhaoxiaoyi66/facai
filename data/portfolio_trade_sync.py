@@ -453,7 +453,7 @@ def _empty_preview(entry_id: int | None, *, status: str, error: str) -> dict[str
 def _normalize_symbol(value: object) -> str:
     symbol = str(value or "").strip().upper()
     if not symbol:
-        raise ValueError("symbol is required")
+        raise ValueError("缺少股票代码")
     return symbol
 
 

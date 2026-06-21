@@ -16,7 +16,7 @@ def refresh_symbol_market_data(symbol: str, *, provider: Any | None = None, now:
         "error": None,
     }
     if not normalized:
-        result["error"] = "symbol is required"
+        result["error"] = "缺少股票代码"
         return result
 
     result["before"] = _cache_summary(normalized)

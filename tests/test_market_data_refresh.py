@@ -66,7 +66,7 @@ class MarketDataRefreshTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["quoteStatus"], "failed")
         self.assertEqual(result["historyStatus"], "failed")
-        self.assertEqual(result["error"], "symbol is required")
+        self.assertEqual(result["error"], "缺少股票代码")
         self.assertEqual(provider.calls, [])
 
 

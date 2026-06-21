@@ -793,7 +793,7 @@ def test_advisory_decisions_allow_manual_continue_and_record_override(decision: 
 @pytest.mark.parametrize(
     ("symbol", "values", "match"),
     [
-        ("", _base_values(), "symbol is required"),
+        ("", _base_values(), "缺少股票代码"),
         ("MSFT", _base_values(quantity=0), "quantity must be positive"),
         ("MSFT", _base_values(price=0), "price must be positive"),
     ],

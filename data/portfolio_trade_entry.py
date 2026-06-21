@@ -789,7 +789,7 @@ def _planned_ladder_prior_quantities(symbol: str, path: Path) -> dict[str, float
 def _normalize_symbol(symbol: str) -> str:
     normalized = str(symbol or "").strip().upper()
     if not normalized:
-        raise ValueError("symbol is required")
+        raise ValueError("缺少股票代码")
     return normalized
 
 

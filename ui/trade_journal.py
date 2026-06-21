@@ -4726,7 +4726,7 @@ def _number(value: object) -> float | None:
 
 
 def _friendly_error(message: str) -> str:
-    if "symbol is required" in message:
+    if "symbol is required" in message or "缺少股票代码" in message:
         return "请填写股票代码。"
     if "action_type is invalid" in message:
         return "请选择有效的操作类型。"

@@ -2555,7 +2555,7 @@ def _median(values: list[float]) -> float | None:
 def _normalize_symbol(symbol: str) -> str:
     normalized = str(symbol or "").strip().upper()
     if not normalized:
-        raise ValueError("symbol is required")
+        raise ValueError("缺少股票代码")
     return normalized
 
 
