@@ -7355,7 +7355,7 @@ def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
                 "binance_last_price": 207.08,
                 "spread_vs_afterhours_pct": 0.81,
                 "spread_vs_regular_close_pct": 0.92,
-                "alert_level_cn": "瑙傚療",
+                "alert_level_cn": "观察",
                 "mapping_confidence": "candidate",
                 "updated_at": "2026-06-14T17:17:11+00:00",
             }
@@ -7363,6 +7363,7 @@ def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
     )
 
     assert "FINAL" not in frame.to_string()
+    assert "瑙傚療" not in frame.to_string()
 
 
 def test_refresh_price_preserves_afterhours_anchor_from_snapshot_rows() -> None:
