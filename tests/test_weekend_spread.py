@@ -6897,11 +6897,13 @@ def test_realtime_action_bar_keeps_low_frequency_tools_out_of_first_screen() -> 
 
 def test_tradingview_backfill_tools_use_readable_recent_event_labels() -> None:
     source = inspect.getsource(weekend_spread._render_tradingview_backfill_tools)
+    broken_p0_label = "\x3f\x3f P0"
+    broken_p2_label = "\x3f\x3f P2"
 
     assert "最近 P0" in source
     assert "最近 P2" in source
-    assert "?? P0" not in source
-    assert "?? P2" not in source
+    assert broken_p0_label not in source
+    assert broken_p2_label not in source
 
 
 def test_weekend_review_row_status_uses_cjk_separator_for_context_labels() -> None:
