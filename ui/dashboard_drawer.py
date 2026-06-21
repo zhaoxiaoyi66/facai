@@ -1782,7 +1782,7 @@ def _volume_price_status_label(value: object, *, score: float | None = None) -> 
         "FAILED": "失效",
         "OVEREXTENDED_SUPPORT_READ": "脱离观察区",
         "DATA_MISSING": "数据缺失",
-    }.get(str(value or ""), "")
+    }.get(str(value or ""), _drawer_unknown_display_text(value, "数据待复核"))
 
 
 def _acceptance_status_label(value: object) -> str:
@@ -1792,7 +1792,7 @@ def _acceptance_status_label(value: object) -> str:
         "ACCEPTANCE_UNCONFIRMED": "承接未确认",
         "ACCEPTANCE_FAILED": "承接失败",
         "DATA_MISSING": "数据缺失",
-    }.get(str(value or ""), "")
+    }.get(str(value or ""), _drawer_unknown_display_text(value, "数据待复核"))
 
 
 def _structure_entry_summary_hint(status_code: str, status_label: str, is_data_missing: bool, has_gaps: bool) -> str:
