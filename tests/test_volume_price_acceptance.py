@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 import pytest
 
@@ -111,6 +113,19 @@ def test_forming_low_score_uses_cautious_label() -> None:
     assert snapshot.volume_price_score < 55
     assert snapshot.status_label == "初步承接，尚未确认"
     assert "不构成买入确认" in snapshot.acceptance_reason_cn
+
+
+def test_volume_status_label_hides_unknown_internal_codes() -> None:
+    snapshot = evaluate_volume_price_acceptance(
+        daily_bars=_bars(close=103, open_=104, high=105, low=99, volume=900_000),
+        technicals=_context(),
+    )
+    internal = replace(snapshot, volume_price_status="NEW_INTERNAL_VOLUME_STATUS")
+    custom = replace(snapshot, volume_price_status="人工量价状态")
+
+    assert internal.status_label == "量价待确认"
+    assert custom.status_label == "人工量价状态"
+    assert internal.to_dict()["status_label"] == "量价待确认"
 
 
 def test_volume_breakout_above_confirm_line_is_confirmed() -> None:

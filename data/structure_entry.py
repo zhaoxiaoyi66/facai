@@ -44,6 +44,15 @@ STATUS_HINTS = {
 }
 
 
+def _unknown_status_label(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-", "^", ".", " ", "&"}) for char in text):
+        return fallback
+    return text
+
+
 @dataclass(frozen=True)
 class StructureEntryAdvisor:
     structure_status: str
@@ -61,7 +70,7 @@ class StructureEntryAdvisor:
 
     @property
     def status_label(self) -> str:
-        return STATUS_LABELS.get(self.structure_status, self.structure_status)
+        return STATUS_LABELS.get(self.structure_status, _unknown_status_label(self.structure_status, "结构待确认"))
 
     @property
     def action_hint(self) -> str:

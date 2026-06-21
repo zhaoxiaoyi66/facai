@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 
 from data.pullback_acceptance import (
@@ -36,6 +38,28 @@ def test_price_in_repair_zone_without_confirmation_is_unconfirmed() -> None:
     assert snapshot.close_confirmation_status != "收盘确认"
     assert snapshot.zone_source == "radar"
     assert snapshot.support_source == "near_term_repair_zone_low"
+
+
+def test_pullback_status_label_hides_unknown_internal_codes() -> None:
+    snapshot = evaluate_pullback_acceptance(
+        technicals={
+            "close": 103,
+            "open": 104,
+            "low": 101,
+            "high": 106,
+            "near_term_repair_zone_low": 100,
+            "confirmation_price": 110,
+            "invalidation_price": 98,
+            "volume": 900_000,
+            "avg_volume": 1_000_000,
+        }
+    )
+    internal = replace(snapshot, acceptance_status="NEW_INTERNAL_ACCEPTANCE_STATUS")
+    custom = replace(snapshot, acceptance_status="人工承接状态")
+
+    assert internal.status_label == "承接待确认"
+    assert custom.status_label == "人工承接状态"
+    assert internal.to_dict()["status_label"] == "承接待确认"
 
 
 def test_support_held_close_confirmed_and_relative_strength_is_confirmed() -> None:

@@ -23,6 +23,15 @@ STATUS_LABELS = {
 }
 
 
+def _unknown_status_label(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-", "^", ".", " ", "&"}) for char in text):
+        return fallback
+    return text
+
+
 @dataclass(frozen=True)
 class PullbackAcceptanceSnapshot:
     acceptance_status: str
@@ -43,7 +52,7 @@ class PullbackAcceptanceSnapshot:
 
     @property
     def status_label(self) -> str:
-        return STATUS_LABELS.get(self.acceptance_status, self.acceptance_status)
+        return STATUS_LABELS.get(self.acceptance_status, _unknown_status_label(self.acceptance_status, "承接待确认"))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self) | {"status_label": self.status_label}

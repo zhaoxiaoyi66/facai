@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from data.structure_entry import (
     DATA_MISSING,
     DIP_ONLY,
@@ -41,6 +43,22 @@ def test_price_decline_without_buyer_support_is_dip_only() -> None:
     assert advisor.structure_status == DIP_ONLY
     assert "结构证据还不完整" in advisor.action_hint
     assert "价格跌破关键支撑" in " ".join(advisor.structure_warnings)
+
+
+def test_structure_status_label_hides_unknown_internal_codes() -> None:
+    advisor = evaluate_structure_entry(
+        ticker="NOW",
+        technicals=_technicals(ema20=110, ema50=120, ema200=105, recent_swing_low=115),
+        decline_reason="unknown",
+        thesis_status=THESIS_INTACT,
+        relative_strength_status="相对中性",
+    )
+    internal = replace(advisor, structure_status="NEW_INTERNAL_STRUCTURE_STATUS")
+    custom = replace(advisor, structure_status="人工结构状态")
+
+    assert internal.status_label == "结构待确认"
+    assert custom.status_label == "人工结构状态"
+    assert internal.to_dict()["status_label"] == "结构待确认"
 
 
 def test_broken_thesis_marks_structure_broken() -> None:
