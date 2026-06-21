@@ -54,6 +54,16 @@ def test_manual_review_confirmed_metric_subtitle_hides_raw_metric_key() -> None:
     assert manual_review._confirmed_metric_subtitle({"metricKey": "subscriptionRevenueGrowth", "period": "2026 Q1"}) == "2026 Q1"
 
 
+def test_manual_review_auto_archive_sample_uses_metric_display_label() -> None:
+    html = manual_review._auto_archive_sample_html(
+        [{"symbol": "NOW", "metricKey": "subscriptionRevenueGrowth", "reason": "duplicate_candidate"}]
+    )
+
+    assert "订阅收入增速" in html
+    assert "subscriptionRevenueGrowth" not in html
+    assert "重复候选" in html
+
+
 def test_manual_review_qwen_not_configured_copy_hides_env_key_name() -> None:
     source = inspect.getsource(manual_review._render_last_qwen_result)
 

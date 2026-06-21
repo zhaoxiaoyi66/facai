@@ -1865,7 +1865,7 @@ def _auto_archive_sample_html(items: list[dict]) -> str:
         (
             '<div class="review-auto-archive-sample">'
             f'<strong>{escape(str(item.get("symbol") or ""))}</strong>'
-            f'<span>{escape(str(item.get("metric") or item.get("metricKey") or ""))}</span>'
+            f'<span>{escape(metric_label(item.get("metric") or item.get("metricKey")) or "指标待映射")}</span>'
             f'<em>{escape(_auto_archive_reason_label(item.get("reason")))}</em>'
             "</div>"
         )
