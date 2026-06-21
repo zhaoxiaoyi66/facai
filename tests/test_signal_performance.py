@@ -194,6 +194,37 @@ def test_legacy_price_position_signal_type_displays_as_research_center(tmp_path:
     assert "价格位置" not in str(rows[0])
 
 
+def test_legacy_english_signal_type_and_unknown_codes_are_localized(tmp_path: Path) -> None:
+    store = SignalPerformanceStore(tmp_path / "cache.sqlite")
+    english_signal = store.save_signal(
+        symbol="NVDA",
+        signal_date="2026-01-01",
+        signal_type="AI Stock Radar",
+        signal_label="",
+        signal_price=100,
+        price_source="本地日线",
+    )
+    internal_signal = store.save_signal(
+        symbol="CRM",
+        signal_date="2026-01-02",
+        signal_type="NEW_INTERNAL_SIGNAL",
+        signal_label="",
+        signal_price=200,
+        price_source="本地日线",
+    )
+
+    rows = signal_performance_table_rows([english_signal, internal_signal])
+    row_text = str(rows)
+
+    assert rows[0]["信号类型"] == "研报中心"
+    assert rows[1]["信号类型"] == "未标注"
+    assert signal_type_display_label("Price Position") == "研报中心"
+    assert signal_type_display_label("AI Stock Radar Research") == "研报中心"
+    assert signal_type_display_label("NEW_INTERNAL_SIGNAL") == "未标注"
+    assert "AI Stock Radar" not in row_text
+    assert "NEW_INTERNAL_SIGNAL" not in row_text
+
+
 def test_infer_price_position_signal_label_uses_chinese_buckets() -> None:
     assert infer_price_position_signal_label({"primary_zone_text": "左侧试仓候选区"}) == "低位试仓区"
     assert infer_price_position_signal_label({"primary_zone_text": "承接观察区内"}) == "观察承接区"

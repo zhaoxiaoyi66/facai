@@ -35,6 +35,9 @@ SIGNAL_TYPE_OPTIONS = [
 
 SIGNAL_TYPE_DISPLAY_ALIASES = {
     "价格位置": "研报中心",
+    "Price Position": "研报中心",
+    "AI Stock Radar": "研报中心",
+    "AI Stock Radar Research": "研报中心",
 }
 
 RESULT_LABELS = ["有效", "震荡有效", "买早", "追高", "无效", "数据不足"]
@@ -514,9 +517,13 @@ def _best_or_worst_signal_type(records: list[dict[str, Any]], *, best: bool) -> 
 
 def signal_type_display_label(value: object) -> str:
     text = str(value or "").strip()
-    if not text:
+    if not text or text.lower() in {"none", "nan", "n/a", "null", "unknown"}:
         return "未标注"
-    return SIGNAL_TYPE_DISPLAY_ALIASES.get(text, text)
+    if text in SIGNAL_TYPE_DISPLAY_ALIASES:
+        return SIGNAL_TYPE_DISPLAY_ALIASES[text]
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-", " "}) for char in text):
+        return "未标注"
+    return text
 
 
 def _signal_type_filter_values(value: object) -> list[str]:
