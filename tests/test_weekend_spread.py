@@ -7841,6 +7841,24 @@ def test_mapping_batch_save_rejects_invalid_contract(tmp_path) -> None:
     assert not mapping_path.exists()
 
 
+def test_mapping_batch_missing_ticker_uses_clear_display_label(tmp_path) -> None:
+    ignore_path = tmp_path / "binance_symbol_ignore.local.json"
+    mapping_path = tmp_path / "binance_symbol_mapping.local.json"
+    operations = [{"ticker": "", "edited_symbol": "WDCUSDT", "original_symbol": "WDCUSDT"}]
+
+    ignore_summary = weekend_spread._apply_ignore_operations(operations, path=ignore_path)
+    restore_summary = weekend_spread._apply_restore_operations(operations, path=ignore_path)
+    save_summary = weekend_spread._apply_contract_changes(
+        operations,
+        path=mapping_path,
+        ignore_path=ignore_path,
+    )
+
+    assert ignore_summary["failures"] == ["未识别标的：缺少 Binance 合约"]
+    assert restore_summary["failures"] == ["未识别标的：缺少股票代码"]
+    assert save_summary["failures"] == ["未识别标的：缺少股票代码"]
+
+
 def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
     path = tmp_path / "weekend_spread_monitor_snapshots.json"
     rows = [

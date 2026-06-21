@@ -7712,7 +7712,7 @@ def _apply_ignore_operations(operations: list[dict], *, path: Path) -> dict[str,
         ticker = str(row.get("ticker") or "").strip().upper()
         symbol = str(row.get("edited_symbol") or row.get("original_symbol") or "").strip().upper()
         if not ticker or not symbol:
-            summary["failures"].append(f"{ticker or '未知'}：缺少 Binance 合约")
+            summary["failures"].append(f"{ticker or '未识别标的'}：缺少 Binance 合约")
             continue
         try:
             ignore_binance_symbol(ticker, symbol, ignore_reason="用户批量忽略", path=path)
@@ -7728,7 +7728,7 @@ def _apply_restore_operations(operations: list[dict], *, path: Path) -> dict[str
     for row in operations:
         ticker = str(row.get("ticker") or "").strip().upper()
         if not ticker:
-            summary["failures"].append("未知：缺少股票代码")
+            summary["failures"].append("未识别标的：缺少股票代码")
             continue
         try:
             restore_ignored_binance_symbol(ticker, path=path)
@@ -7745,7 +7745,7 @@ def _apply_contract_changes(operations: list[dict], *, path: Path, ignore_path: 
         ticker = str(row.get("ticker") or "").strip().upper()
         symbol = str(row.get("edited_symbol") or "").strip().upper()
         if not ticker:
-            summary["failures"].append("未知：缺少股票代码")
+            summary["failures"].append("未识别标的：缺少股票代码")
             continue
         if not _is_valid_usdt_contract(symbol):
             summary["failures"].append(f"{ticker}：Binance 合约格式异常，请检查。")
