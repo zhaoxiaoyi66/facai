@@ -29,7 +29,7 @@ _DECISION_LABELS = {
     "WAIT": "等待",
     "BLOCK_CHASE": "追高风险提醒",
     "AVOID": "回避",
-    "DATA_MISSING": "数据不足",
+    "DATA_MISSING": "缺数据",
 }
 _DATA_STATUS_LABELS = {
     "ok": "正常",
@@ -303,8 +303,10 @@ def _decision_badge_html(decision: object, *, held: bool = False) -> str:
 def _decision_badge_parts(source: object, *, held: bool = False) -> tuple[str, str, str]:
     row = source if isinstance(source, dict) else {}
     canonical_action = _canonical_buy_zone_action(row)
-    if canonical_action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+    if canonical_action == "DATA_INSUFFICIENT":
         return "DATA_MISSING", "暂停加仓 / 数据不足" if held else "数据不足", "muted"
+    if canonical_action == "DATA_MISSING":
+        return "DATA_MISSING", "暂停加仓 / 缺数据" if held else "缺数据", "muted"
     if canonical_action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
         return "NO_BUY_ZONE", "未生成买区", "muted"
     if canonical_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:

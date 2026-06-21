@@ -816,6 +816,19 @@ def test_watchlist_prefers_canonical_buy_zone_status_over_avoid() -> None:
     assert "回避" not in html
 
 
+def test_watchlist_missing_buy_zone_status_shows_missing_data_copy() -> None:
+    html = watchlist_ui._decision_badge_html(
+        {
+            "decision": "AVOID",
+            "buy_zone_context": {"current_action": "DATA_MISSING"},
+        }
+    )
+
+    assert "缺数据" in html
+    assert "数据不足" not in html
+    assert "回避" not in html
+
+
 def test_watchlist_held_missing_data_shows_pause_add_instead_of_avoid() -> None:
     html = watchlist_ui._decision_badge_html(
         {
