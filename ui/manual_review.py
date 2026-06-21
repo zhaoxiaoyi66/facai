@@ -209,7 +209,7 @@ def _render_recent_confirmed_row(store: ReviewQueueStore, row: dict) -> None:
         cols[1].markdown(f"**{escape(symbol or '待补')}**")
         cols[2].markdown(
             f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
-            f"<div class='metric-sub'>{escape(str(row.get('metricKey') or ''))}</div>",
+            f"<div class='metric-sub'>{escape(_confirmed_metric_subtitle(row))}</div>",
             unsafe_allow_html=True,
         )
         cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
@@ -407,6 +407,12 @@ def _metric_row_subtitle(row: dict) -> str:
     if freshness:
         parts.append(freshness)
     return " · ".join(part for part in parts if part)
+
+
+def _confirmed_metric_subtitle(row: dict) -> str:
+    subtitle = _metric_row_subtitle(row)
+    parts = [part.strip() for part in subtitle.split("·") if part.strip() and part.strip() not in {"待补", "未记录", "暂无"}]
+    return " · ".join(parts) or "已确认指标"
 
 
 def _target_basis_label(value: object) -> str:

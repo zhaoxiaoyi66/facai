@@ -47,6 +47,13 @@ def test_manual_review_score_impact_copy_localizes_internal_status() -> None:
     assert "Quality" not in source
 
 
+def test_manual_review_confirmed_metric_subtitle_hides_raw_metric_key() -> None:
+    assert manual_review._confirmed_metric_subtitle({"metricKey": "subscriptionRevenueGrowth"}) == "已确认指标"
+    assert manual_review._confirmed_metric_subtitle({"metricKey": "NEW_INTERNAL_METRIC"}) == "已确认指标"
+    assert "subscriptionRevenueGrowth" not in manual_review._confirmed_metric_subtitle({"metricKey": "subscriptionRevenueGrowth"})
+    assert manual_review._confirmed_metric_subtitle({"metricKey": "subscriptionRevenueGrowth", "period": "2026 Q1"}) == "2026 Q1"
+
+
 def test_manual_review_qwen_not_configured_copy_hides_env_key_name() -> None:
     source = inspect.getsource(manual_review._render_last_qwen_result)
 
