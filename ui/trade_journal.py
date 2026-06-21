@@ -1042,7 +1042,7 @@ def _render_sell_news_check(symbol: str) -> None:
         cols[0].metric("7 天重大新闻", int(context.get("major_news_7d") or 0))
         cols[1].metric("30 天重大新闻", int(context.get("major_news_30d") or 0))
         cols[2].metric("重大负面", int(context.get("negative_major_7d") or 0))
-        cols[3].metric("一致性", str(context.get("news_price_match_label") or "数据不足"))
+        cols[3].metric("一致性", str(context.get("news_price_match_label") or "价格反应数据不足"))
         if context.get("has_major_negative_7d"):
             st.warning("存在重大负面新闻，建议复核原投资逻辑。")
         else:

@@ -1,4 +1,5 @@
 from pathlib import Path
+import inspect
 
 import ui.portfolio as portfolio_ui
 
@@ -98,3 +99,10 @@ def test_portfolio_drawer_discipline_labels_do_not_show_mojibake() -> None:
 
 def test_portfolio_unknown_lane_label_does_not_show_raw_key() -> None:
     assert portfolio_ui._lane_label("NEW_LANE") == "未归类"
+
+
+def test_portfolio_news_check_uses_specific_price_reaction_fallback() -> None:
+    function_source = inspect.getsource(portfolio_ui._render_portfolio_news_check)
+
+    assert "价格反应数据不足" in function_source
+    assert 'news_price_match_label") or "数据不足"' not in function_source

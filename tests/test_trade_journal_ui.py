@@ -928,3 +928,10 @@ def test_trade_performance_detail_displays_sell_context_type() -> None:
 
 def test_empty_sell_context_type_displays_as_not_recorded() -> None:
     assert trade_journal._sell_context_type_text("") == "未记录"
+
+
+def test_trade_journal_news_check_uses_specific_price_reaction_fallback() -> None:
+    function_source = inspect.getsource(trade_journal._render_sell_news_check)
+
+    assert "价格反应数据不足" in function_source
+    assert 'news_price_match_label") or "数据不足"' not in function_source
