@@ -8629,7 +8629,7 @@ def _afterhours_reason_text(value: object) -> str:
         "STALE_CACHE": "盘后缓存过期",
         "FALLBACK_REGULAR_CLOSE": "常规收盘回退",
         "REGULAR_CLOSE_FALLBACK": "常规收盘回退",
-    }.get(code, code or "盘后锚点缺失")
+    }.get(code, _unknown_display_text(value, "盘后锚点缺失"))
 
 
 def _afterhours_source_text(value: object) -> str:
