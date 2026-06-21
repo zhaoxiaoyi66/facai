@@ -8519,7 +8519,7 @@ def _mapping_confidence_label(value: object) -> str:
         "stale": "映射可用",
         "rejected": "已忽略",
         "auto_available": "映射可用",
-    }.get(text, "无映射" if not text else text)
+    }.get(text, "无映射" if not text else _unknown_display_text(value, "待确认"))
 
 
 def _candidate_text(value: object) -> str:

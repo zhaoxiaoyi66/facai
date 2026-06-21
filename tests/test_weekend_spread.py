@@ -1538,6 +1538,9 @@ def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
     assert weekend_spread._monitor_source_text("") == "未记录来源"
     assert weekend_spread._monitor_source_text("NEW_MONITOR_SOURCE") == "未识别来源"
     assert weekend_spread._clean_self_check_text("Alpaca BOATS", "自检状态待确认") == "Alpaca BOATS"
+    assert weekend_spread._mapping_confidence_label("confirmed") == "人工锁定"
+    assert weekend_spread._mapping_confidence_label("NEW_MAPPING_CONFIDENCE") == "待确认"
+    assert weekend_spread._mapping_confidence_label("人工确认") == "人工确认"
     for label in labels:
         assert "NEW_" not in label
 
