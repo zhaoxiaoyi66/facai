@@ -330,6 +330,17 @@ def test_cnn_fear_greed_missing_does_not_show_internal_sentiment_proxy_label() -
     assert "CNN HTTP 418" not in text
 
 
+def test_macro_indicator_label_hides_unknown_internal_codes() -> None:
+    internal = MacroIndicatorSnapshot(indicator="NEW_INTERNAL_MACRO", value=1)
+    custom = MacroIndicatorSnapshot(indicator="人工宏观指标", value=1)
+    snapshot = evaluate_macro_regime([internal, custom])
+    html = macro_regime_detail_html(snapshot)
+
+    assert internal.label == "未识别指标"
+    assert custom.label == "人工宏观指标"
+    assert "NEW_INTERNAL_MACRO" not in html
+
+
 def test_macro_store_supports_manual_cache_values(tmp_path) -> None:
     path = tmp_path / "macro.sqlite"
     store = MacroRegimeStore(path)
@@ -924,7 +935,7 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
     )
 
     assert third["indicators"][HY_OAS]["status"] == "failed"
-    assert "circuit" in str(third["indicators"][HY_OAS]["error"]).lower()
+    assert "暂停刷新，使用缓存" in str(third["indicators"][HY_OAS]["error"])
     assert "BAMLH0A0HYM2" not in fred_calls
 
 
@@ -1475,7 +1486,7 @@ def test_fear_greed_http_418_opens_circuit_and_skips_next_frontend_request(tmp_p
 
     assert first["indicators"][FEAR_GREED]["status"] == "failed"
     assert second["indicators"][FEAR_GREED]["status"] == "failed"
-    assert "circuit" in str(second["indicators"][FEAR_GREED]["error"]).lower()
+    assert "暂停刷新，改用代理或缓存" in str(second["indicators"][FEAR_GREED]["error"])
     assert second["indicators"][SENTIMENT_PROXY]["status"] == "success"
     assert len(cnn_calls) == 1
 

@@ -93,6 +93,15 @@ INDICATOR_LABELS = {
 }
 
 
+def _macro_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-", "^", ".", " ", "&"}) for char in text):
+        return fallback
+    return text
+
+
 @dataclass(frozen=True)
 class MacroIndicatorSnapshot:
     indicator: str
@@ -117,7 +126,7 @@ class MacroIndicatorSnapshot:
 
     @property
     def label(self) -> str:
-        return INDICATOR_LABELS.get(self.indicator, self.indicator)
+        return INDICATOR_LABELS.get(self.indicator, _macro_unknown_display_text(self.indicator, "未识别指标"))
 
 
 @dataclass(frozen=True)
