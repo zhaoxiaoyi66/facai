@@ -13,6 +13,9 @@ from data.prices import CACHE_PATH
 ALERT_DIRECTIONS = {"below", "above", "near"}
 LINKED_PLAN_TYPES = {"buy_plan", "sell_plan", "risk_review", "manual"}
 DEFAULT_NEAR_THRESHOLD_PCT = 2.0
+PRICE_ALERT_FIELD_LABELS = {
+    "triggerPrice": "触发价格",
+}
 
 
 class PriceAlertStore:
@@ -640,7 +643,7 @@ def _symbol(value: object) -> str:
 def _direction(value: object) -> str:
     direction = str(value or "").strip().lower()
     if direction not in ALERT_DIRECTIONS:
-        raise ValueError("triggerDirection must be below, above, or near")
+        raise ValueError("提醒方向必须选择低于、高于或接近")
     return direction
 
 
@@ -656,7 +659,8 @@ def _clean_text(value: object) -> str:
 def _required_number(value: object, field_name: str) -> float:
     number = _number(value)
     if number is None:
-        raise ValueError(f"{field_name} must be a number")
+        label = PRICE_ALERT_FIELD_LABELS.get(str(field_name or "").strip(), "该字段")
+        raise ValueError(f"{label}需要填写数字")
     return number
 
 

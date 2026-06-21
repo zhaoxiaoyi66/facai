@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from data.price_alerts import PriceAlertStore, evaluate_price_alerts, sync_buy_plan_price_alert
 from data.price_alerts import _money
 
@@ -17,6 +19,17 @@ NOW = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
 def test_price_alert_money_placeholder_is_chinese() -> None:
     assert _money(None) == "暂缺"
     assert _money("bad-price") == "暂缺"
+
+
+def test_price_alert_validation_errors_are_chinese() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = PriceAlertStore(_db(tmpdir))
+
+        with pytest.raises(ValueError, match="提醒方向必须选择低于、高于或接近"):
+            store.create_alert("NVDA", triggerDirection="invalid", triggerPrice=200)
+
+        with pytest.raises(ValueError, match="触发价格需要填写数字"):
+            store.create_alert("NVDA", triggerDirection="below", triggerPrice="bad-price")
 
 
 def _db(tmpdir: str) -> Path:
