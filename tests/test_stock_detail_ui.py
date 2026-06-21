@@ -124,3 +124,5 @@ def test_stock_detail_drawdown_status_does_not_show_raw_internal_codes() -> None
     assert stock_detail._review_status_label("人工状态") == "人工状态"
     assert stock_detail._severity_label("NEW_SEVERITY") == "信息"
     assert stock_detail._severity_label("人工等级") == "人工等级"
+    assert stock_detail._buy_zone_trigger_label("NEW_TRIGGER_TYPE") == "触发条件"
+    assert stock_detail._buy_zone_trigger_label("人工触发") == "人工触发"

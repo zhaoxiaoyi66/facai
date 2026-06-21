@@ -958,7 +958,7 @@ def _buy_zone_trigger_label(value: str) -> str:
     return {
         "下一买入触发价": "第一笔买入价",
         "已低于重仓区": "已进入极端恐慌区",
-    }.get(str(value or ""), str(value or ""))
+    }.get(str(value or ""), _stock_detail_unknown_display_text(value, "触发条件"))
 
 
 def _render_trade_decision_snapshot(
