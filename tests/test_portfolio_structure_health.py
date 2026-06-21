@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from data.macro_regime import REGIME_STRESS
 from data.portfolio_structure_health import (
+    PortfolioStructureCheck,
     STATUS_DANGER,
     STATUS_HEALTHY,
     STATUS_IMBALANCED,
@@ -136,3 +137,21 @@ def test_strip_html_is_compact_chinese_status() -> None:
     assert "仓位结构体检" in html
     assert "现金" in html
     assert "最大单票" in html
+
+
+def test_strip_html_localizes_missing_percentages() -> None:
+    check = PortfolioStructureCheck(
+        status=STATUS_HEALTHY,
+        cash_pct=None,
+        tier_pct={},
+        largest_position_pct=None,
+        top3_position_pct=None,
+        trading_position_pct=None,
+        has_leverage=False,
+        macro_regime=None,
+    )
+
+    html = portfolio_structure_check_strip_html(check)
+
+    assert "待补" in html
+    assert "N/A" not in html

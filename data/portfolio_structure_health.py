@@ -230,7 +230,7 @@ def _macro_regime_text(macro_regime: MacroRegimeSnapshot | str | None) -> str | 
 
 def _pct_text(value: float | None) -> str:
     if value is None:
-        return "N/A"
+        return "待补"
     return f"{value:.1f}%"
 
 
