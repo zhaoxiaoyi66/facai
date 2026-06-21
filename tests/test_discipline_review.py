@@ -25,6 +25,7 @@ from data.discipline_review import (
     build_trade_review_conclusion,
     default_period_dates,
     get_current_account_nav,
+    label_for_tag,
 )
 from data.investment_principles import (
     DEFAULT_QUOTE_TEXT,
@@ -231,6 +232,13 @@ def test_trade_discipline_tags_are_kept_for_history_compatibility() -> None:
 
         assert [row["tag"] for row in saved] == ["chase", "plan_followed"]
         assert all(row["notes"] == "复盘备注" for row in saved)
+
+
+def test_discipline_tag_label_hides_unknown_internal_codes() -> None:
+    assert label_for_tag("chase") == "追高"
+    assert label_for_tag("NEW_INTERNAL_TAG") == "其他纪律"
+    assert label_for_tag("") == "其他纪律"
+    assert label_for_tag("人工标签") == "人工标签"
 
 
 def test_discipline_stats_count_recent_tags_for_legacy_history() -> None:

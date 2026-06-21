@@ -1332,7 +1332,16 @@ def build_dashboard_discipline_snapshot(
 
 
 def label_for_tag(tag: object) -> str:
-    return DISCIPLINE_TAG_LABELS.get(str(tag or ""), str(tag or ""))
+    return DISCIPLINE_TAG_LABELS.get(str(tag or ""), _unknown_tag_label(tag))
+
+
+def _unknown_tag_label(tag: object) -> str:
+    text = str(tag or "").strip()
+    if not text:
+        return "其他纪律"
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return "其他纪律"
+    return text
 
 
 def get_current_account_nav(path: Path = CACHE_PATH) -> dict[str, Any]:
