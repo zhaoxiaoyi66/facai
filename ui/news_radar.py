@@ -30,6 +30,60 @@ IMPACT_OPTIONS = ["全部", "重大", "中等", "低"]
 SENTIMENT_OPTIONS = ["全部", "正面", "负面", "中性", "待判断"]
 RANGE_OPTIONS = {"最近 1 天": 1, "最近 7 天": 7, "最近 30 天": 30}
 
+EVENT_TYPE_LABELS = {
+    "earnings": "财报",
+    "financial_results": "财报",
+    "guidance": "指引",
+    "rating": "评级调整",
+    "rating_change": "评级调整",
+    "analyst_rating": "评级调整",
+    "price_target": "目标价调整",
+    "target_price": "目标价调整",
+    "m&a": "并购",
+    "ma": "并购",
+    "merger": "并购",
+    "acquisition": "并购",
+    "partnership": "合作/订单",
+    "order": "合作/订单",
+    "ai": "AI/数据中心",
+    "ai_data_center": "AI/数据中心",
+    "data_center": "AI/数据中心",
+    "product": "产品/技术",
+    "technology": "产品/技术",
+    "regulatory": "监管/诉讼",
+    "lawsuit": "监管/诉讼",
+    "litigation": "监管/诉讼",
+    "management": "管理层变动",
+    "management_change": "管理层变动",
+    "short_report": "做空报告",
+    "macro": "宏观/板块",
+    "sector": "宏观/板块",
+    "opinion": "观点文章",
+    "analyst_opinion": "观点文章",
+    "article": "观点文章",
+    "ordinary": "普通市场新闻",
+    "general": "普通市场新闻",
+    "market_news": "普通市场新闻",
+    "low_value_repeat": "低价值复述",
+}
+SENTIMENT_LABELS = {
+    "positive": "正面",
+    "bullish": "正面",
+    "negative": "负面",
+    "bearish": "负面",
+    "neutral": "中性",
+    "pending": "待判断",
+    "unknown": "待判断",
+}
+IMPACT_LABELS = {
+    "major": "重大",
+    "high": "重大",
+    "medium": "中等",
+    "moderate": "中等",
+    "low": "低",
+    "minor": "低",
+}
+
 
 def render() -> None:
     store = NewsRadarStore()
@@ -172,9 +226,9 @@ def _render_stats(store: NewsRadarStore, items: list[dict[str, Any]], symbol_gro
 def _render_news_card(item: dict[str, Any], *, store: NewsRadarStore, symbol_groups: dict[str, set[str]]) -> None:
     symbol = _clean(item.get("symbol"))
     symbol_label = _news_symbol_label(symbol)
-    event_type = _clean(item.get("event_type")) or "待判断"
-    sentiment = _clean(item.get("sentiment_label")) or "待判断"
-    impact = _clean(item.get("impact_level")) or "低"
+    event_type = _event_type_label(item.get("event_type"))
+    sentiment = _sentiment_label(item.get("sentiment_label"))
+    impact = _impact_label(item.get("impact_level"))
     title_zh, original_title, translation_note = _title_parts(item)
     summary = _summary_text(item)
     relevance = _relevance_reason(item, symbol_groups)
@@ -306,9 +360,9 @@ def _news_detail_rows(
         ("原文链接", source_link_text(item)),
         ("原始来源", _clean(item.get("source") or item.get("site")) or "未知来源"),
         ("发布时间", _format_time(item.get("published_at"))),
-        ("事件类型", _clean(item.get("event_type")) or "待判断"),
-        ("情绪判断", _clean(item.get("sentiment_label")) or "待判断"),
-        ("影响等级", _clean(item.get("impact_level")) or "低"),
+        ("事件类型", _event_type_label(item.get("event_type"))),
+        ("情绪判断", _sentiment_label(item.get("sentiment_label"))),
+        ("影响等级", _impact_label(item.get("impact_level"))),
         ("关键词命中", keywords or "未命中明显关键词"),
         ("中文摘要", _summary_text(item)),
         ("为什么重要", relevance or _clean(item.get("relevance_reason_zh")) or "需要人工复核影响。"),
@@ -377,9 +431,9 @@ def _price_reaction_line(context: dict[str, Any] | None) -> str:
 
 def _card_tone(item: dict[str, Any], symbol_groups: dict[str, set[str]]) -> str:
     symbol = _clean(item.get("symbol"))
-    sentiment = _clean(item.get("sentiment_label"))
-    impact = _clean(item.get("impact_level"))
-    event_type = _clean(item.get("event_type"))
+    sentiment = _sentiment_label(item.get("sentiment_label"))
+    impact = _impact_label(item.get("impact_level"))
+    event_type = _event_type_label(item.get("event_type"))
     title = f"{item.get('original_title') or item.get('title') or ''} {item.get('summary') or ''}".lower()
     is_owned = symbol in symbol_groups.get("portfolio", set()) or symbol in symbol_groups.get("core", set())
     factual_negative = any(word in title for word in ("downgrade", "cut guidance", "lawsuit", "investigation", "sec", "doj"))
@@ -438,10 +492,33 @@ def _fmt_pct(value: Any) -> str:
         return "价格数据不足"
 
 
+def _classification_label(value: Any, labels: dict[str, str], fallback: str) -> str:
+    text = _clean(value)
+    if not text:
+        return fallback
+    normalized = text.lower().replace("-", "_").replace(" ", "_")
+    return labels.get(normalized, text)
+
+
+def _event_type_label(value: Any) -> str:
+    return _classification_label(value, EVENT_TYPE_LABELS, "待判断")
+
+
+def _sentiment_label(value: Any) -> str:
+    return _classification_label(value, SENTIMENT_LABELS, "待判断")
+
+
+def _impact_label(value: Any) -> str:
+    return _classification_label(value, IMPACT_LABELS, "低")
+
+
 def _clean(value: Any) -> str:
     if value is None:
         return ""
-    return str(value).strip()
+    text = str(value).strip()
+    if text.lower() in {"none", "nan", "n/a", "null", "unknown"}:
+        return ""
+    return text
 
 
 def _has_chinese(value: str) -> bool:

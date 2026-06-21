@@ -172,6 +172,26 @@ def test_news_detail_rows_include_original_title_and_link() -> None:
     assert details["中文摘要"]
 
 
+def test_news_detail_rows_localize_legacy_classification_codes() -> None:
+    item = {
+        "symbol": "NVDA",
+        "original_title": "Legacy cached item",
+        "event_type": "opinion",
+        "sentiment_label": "negative",
+        "impact_level": "major",
+        "summary_zh": "这是一条旧缓存新闻。",
+    }
+
+    details = dict(_news_detail_rows(item, relevance="需要人工复核影响。"))
+    joined = " ".join(details.values())
+
+    assert details["事件类型"] == "观点文章"
+    assert details["情绪判断"] == "负面"
+    assert details["影响等级"] == "重大"
+    for raw in ("opinion", "negative", "major", "None"):
+        assert raw not in joined
+
+
 def test_price_reaction_missing_context_uses_specific_copy() -> None:
     assert _price_reaction_line(None) == "价格反应数据不足"
 
