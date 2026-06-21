@@ -11,6 +11,8 @@ from data.signal_performance import (
     infer_price_position_signal_label,
     refresh_signal_outcomes,
     signal_performance_table_rows,
+    signal_performance_summary,
+    signal_type_display_label,
 )
 from ui import signal_performance as signal_performance_ui
 
@@ -167,6 +169,29 @@ def test_price_position_signal_writers_use_research_center_label() -> None:
     assert 'signal_type="研报中心"' in dashboard_source
     assert 'signal_type="研报中心"' in stock_detail_source
     assert 'signal_type="价格位置"' not in source
+
+
+def test_legacy_price_position_signal_type_displays_as_research_center(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.sqlite"
+    store = SignalPerformanceStore(db_path)
+    old_signal = store.save_signal(
+        symbol="NVDA",
+        signal_date="2026-01-01",
+        signal_type="价格位置",
+        signal_label="",
+        signal_price=100,
+        price_source="本地日线",
+    )
+
+    filtered = store.list_signals(signal_type="研报中心")
+    rows = signal_performance_table_rows([old_signal])
+    summary = signal_performance_summary([{**old_signal, "return_20d_pct": 2.5}])
+
+    assert filtered[0]["signal_id"] == old_signal["signal_id"]
+    assert rows[0]["信号类型"] == "研报中心"
+    assert summary["best_signal_type"] == "研报中心"
+    assert signal_type_display_label("价格位置") == "研报中心"
+    assert "价格位置" not in str(rows[0])
 
 
 def test_infer_price_position_signal_label_uses_chinese_buckets() -> None:

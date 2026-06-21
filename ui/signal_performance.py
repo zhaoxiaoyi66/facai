@@ -13,6 +13,7 @@ from data.signal_performance import (
     refresh_signal_outcomes,
     signal_performance_summary,
     signal_performance_table_rows,
+    signal_type_display_label,
 )
 from settings import load_watchlist
 from ui.theme import render_page_header
@@ -83,7 +84,9 @@ def _render_manual_signal_form(store: SignalPerformanceStore) -> None:
 
 def _render_filters(records: list[dict]) -> dict:
     symbols = ["全部"] + sorted({str(record.get("symbol") or "") for record in records if record.get("symbol")})
-    signal_types = ["全部"] + sorted({str(record.get("signal_type") or "") for record in records if record.get("signal_type")})
+    signal_types = ["全部"] + sorted(
+        {signal_type_display_label(record.get("signal_type")) for record in records if record.get("signal_type")}
+    )
     results = ["全部"] + RESULT_LABELS
     default_start = date.today() - timedelta(days=180)
     default_end = date.today()

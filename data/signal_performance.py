@@ -33,6 +33,10 @@ SIGNAL_TYPE_OPTIONS = [
     "手动信号",
 ]
 
+SIGNAL_TYPE_DISPLAY_ALIASES = {
+    "价格位置": "研报中心",
+}
+
 RESULT_LABELS = ["有效", "震荡有效", "买早", "追高", "无效", "数据不足"]
 
 
@@ -230,9 +234,11 @@ class SignalPerformanceStore:
         if clean_symbol:
             clauses.append("symbol = ?")
             params.append(clean_symbol)
-        if str(signal_type or "").strip():
-            clauses.append("signal_type = ?")
-            params.append(str(signal_type).strip())
+        signal_type_values = _signal_type_filter_values(signal_type)
+        if signal_type_values:
+            placeholders = ", ".join("?" for _ in signal_type_values)
+            clauses.append(f"signal_type IN ({placeholders})")
+            params.extend(signal_type_values)
         if str(result_label or "").strip():
             clauses.append("result_label = ?")
             params.append(str(result_label).strip())
@@ -327,7 +333,7 @@ def signal_performance_table_rows(records: list[dict[str, Any]]) -> list[dict[st
             {
                 "日期": _date_text(record.get("signal_date")),
                 "股票": str(record.get("symbol") or ""),
-                "信号类型": str(record.get("signal_label") or record.get("signal_type") or "未标注"),
+                "信号类型": signal_type_display_label(record.get("signal_label") or record.get("signal_type")),
                 "信号价": _money_text(record.get("signal_price")),
                 "价格来源": str(record.get("price_source") or "未填写"),
                 "1日收益": _pct_text(record.get("return_1d_pct")),
@@ -494,7 +500,7 @@ def _average(values: Any) -> float | None:
 def _best_or_worst_signal_type(records: list[dict[str, Any]], *, best: bool) -> str:
     grouped: dict[str, list[float]] = {}
     for record in records:
-        signal_type = str(record.get("signal_label") or record.get("signal_type") or "未标注")
+        signal_type = signal_type_display_label(record.get("signal_label") or record.get("signal_type"))
         value = _number(record.get("return_20d_pct"))
         if value is None:
             continue
@@ -504,3 +510,21 @@ def _best_or_worst_signal_type(records: list[dict[str, Any]], *, best: bool) -> 
     scored = [(signal_type, sum(values) / len(values)) for signal_type, values in grouped.items()]
     selected = max(scored, key=lambda item: item[1]) if best else min(scored, key=lambda item: item[1])
     return selected[0]
+
+
+def signal_type_display_label(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "未标注"
+    return SIGNAL_TYPE_DISPLAY_ALIASES.get(text, text)
+
+
+def _signal_type_filter_values(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    values = {text}
+    display = signal_type_display_label(text)
+    values.add(display)
+    values.update(raw for raw, label in SIGNAL_TYPE_DISPLAY_ALIASES.items() if label == display)
+    return sorted(values)
