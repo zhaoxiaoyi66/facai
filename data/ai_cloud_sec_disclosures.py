@@ -15,6 +15,11 @@ AI_CLOUD_SEC_MODELS = {
     "NBIS": "AI_INFRA_HIGH_RISK",
 }
 SEC_TEXT_SOURCE_TYPES = {"SEC_8K", "SEC_10Q", "SEC_10K"}
+REFRESH_STATUS_LABELS = {
+    "success": "成功",
+    "partial": "部分完成",
+    "failed": "失败",
+}
 
 
 def refresh_ai_cloud_sec_disclosures(
@@ -28,6 +33,7 @@ def refresh_ai_cloud_sec_disclosures(
     result: dict[str, Any] = {
         "symbol": normalized,
         "status": "failed",
+        "statusLabel": REFRESH_STATUS_LABELS["failed"],
         "modelType": None,
         "fetchedFilings": [],
         "cachedTextCount": 0,
@@ -36,12 +42,12 @@ def refresh_ai_cloud_sec_disclosures(
         "errors": [],
     }
     if not normalized:
-        result["errors"].append("symbol is required")
+        result["errors"].append("缺少股票代码")
         return result
 
     model_type = AI_CLOUD_SEC_MODELS.get(normalized)
     if not model_type:
-        result["errors"].append("only CRWV / NBIS AI cloud SEC refresh is supported")
+        result["errors"].append("仅支持 CRWV / NBIS 的 AI 云 SEC 披露刷新")
         return result
     result["modelType"] = model_type
 
@@ -70,11 +76,7 @@ def refresh_ai_cloud_sec_disclosures(
         for row in pipeline_result.get("logs", [])
         if row.get("status") == "fetched" and row.get("sourceType") in SEC_TEXT_SOURCE_TYPES
     ]
-    errors = [
-        f"{row.get('sourceType')}: {row.get('errorMessage') or row.get('url') or 'failed'}"
-        for row in pipeline_result.get("logs", [])
-        if row.get("status") == "failed"
-    ]
+    errors = [_sec_log_error_message(row) for row in pipeline_result.get("logs", []) if row.get("status") == "failed"]
     extracted_count = len(
         [
             row
@@ -84,9 +86,11 @@ def refresh_ai_cloud_sec_disclosures(
     )
     missing_count = queue_result.item_type_counts.get("missing_kpi", len(pipeline_result.get("missing", [])))
 
+    status = _refresh_status(cached_text_count=len(fetched_filings), extracted_count=extracted_count, errors=errors)
     result.update(
         {
-            "status": _refresh_status(cached_text_count=len(fetched_filings), extracted_count=extracted_count, errors=errors),
+            "status": status,
+            "statusLabel": _refresh_status_label(status),
             "fetchedFilings": fetched_filings,
             "cachedTextCount": len(fetched_filings),
             "extractedCandidateCount": extracted_count,
@@ -107,3 +111,15 @@ def _refresh_status(*, cached_text_count: int, extracted_count: int, errors: lis
     if cached_text_count > 0 or not errors:
         return "partial"
     return "failed"
+
+
+def _refresh_status_label(status: str) -> str:
+    return REFRESH_STATUS_LABELS.get(str(status or ""), "待复核")
+
+
+def _sec_log_error_message(row: dict[str, Any]) -> str:
+    source = str(row.get("sourceType") or "SEC").strip()
+    detail = str(row.get("errorMessage") or row.get("url") or "").strip()
+    if detail:
+        return f"{source}: {detail}"
+    return f"{source}: 请求失败"
