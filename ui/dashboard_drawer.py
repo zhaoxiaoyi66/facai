@@ -1817,7 +1817,7 @@ def _structure_status_label(value: object) -> str:
         "DIP_ONLY": "只是下跌",
         "STRUCTURE_BROKEN": "结构破坏",
         "DATA_MISSING": "数据缺失",
-    }.get(str(value or ""), "")
+    }.get(str(value or ""), _drawer_unknown_display_text(value, "数据待复核"))
 
 
 def _structure_thesis_label(value: object) -> str:

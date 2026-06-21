@@ -57,8 +57,10 @@ def test_drawer_distinguishes_missing_data_from_insufficient_data() -> None:
     assert dashboard_drawer._structure_status_label("DATA_MISSING") == "数据缺失"
     assert dashboard_drawer._volume_price_status_label("NEW_VOLUME_STATUS") == "数据待复核"
     assert dashboard_drawer._acceptance_status_label("NEW_ACCEPTANCE_STATUS") == "数据待复核"
+    assert dashboard_drawer._structure_status_label("NEW_STRUCTURE_STATUS") == "数据待复核"
     assert dashboard_drawer._volume_price_status_label("人工状态") == "人工状态"
     assert dashboard_drawer._acceptance_status_label("人工状态") == "人工状态"
+    assert dashboard_drawer._structure_status_label("人工状态") == "人工状态"
 
 
 def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insufficient() -> None:
