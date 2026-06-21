@@ -581,7 +581,7 @@ def _proxy_status_rows(score) -> list[dict]:
                 "分类": "已使用代理指标",
                 "状态": confidence_label(score.proxy_confidence),
                 "字段": "、".join(metric_label(item) for item in score.proxy_metrics_used),
-                "说明": "用于避免直接数据不足，但会降低 proxyConfidence",
+                "说明": "用于避免直接数据不足，但会降低代理置信度",
             }
         )
     return rows

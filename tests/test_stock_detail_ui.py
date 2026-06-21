@@ -113,6 +113,20 @@ def test_stock_detail_confidence_label_uses_empty_fallback_not_legacy_na() -> No
     assert "confidence_label(score.data_confidence or snapshot.get(\"dataConfidence\"))" in source
 
 
+def test_stock_detail_proxy_rows_do_not_show_internal_confidence_field() -> None:
+    rows = stock_detail._proxy_status_rows(
+        SimpleNamespace(
+            missing_industry_metrics=[],
+            proxy_metrics_used=["revenueGrowth"],
+            proxy_confidence="medium",
+        )
+    )
+    text = str(rows)
+
+    assert "降低代理置信度" in text
+    assert "proxyConfidence" not in text
+
+
 def test_stock_detail_drawdown_status_does_not_show_raw_internal_codes() -> None:
     assert stock_detail._drawdown_state_display("NEW_DRAWDOWN_STATE") == "数据不足"
     assert stock_detail._portfolio_system_action_text({"systemAction": "NEW_SYSTEM_ACTION"}) == "未生成"
