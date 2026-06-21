@@ -7,6 +7,8 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
     DEFAULT_PRINCIPLES,
@@ -593,6 +595,17 @@ def test_account_equity_prefill_reads_nearest_snapshot_without_faking_zero() -> 
         missing = store.build_periodic_return_prefill(start_date="2026-06-01", end_date="2026-06-07")
         assert missing["starting_equity"] is None
         assert missing["ending_equity"] is None
+
+
+def test_account_equity_snapshot_requires_positive_equity_with_chinese_error() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        with pytest.raises(ValueError, match="账户净值必须大于 0"):
+            store.save_account_equity_snapshot({"account_equity": 0})
+
+        with pytest.raises(ValueError, match="账户净值必须大于 0"):
+            store.save_account_equity_snapshot({})
 
 
 def test_latest_only_snapshot_does_not_backfill_historical_period() -> None:

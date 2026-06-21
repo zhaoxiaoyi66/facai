@@ -712,7 +712,7 @@ class DisciplineReviewStore:
         snapshot_time = _parse_datetime(values.get("snapshot_time")) or datetime.now()
         account_equity = _optional_nonnegative_number(values.get("account_equity"))
         if account_equity is None or account_equity <= 0:
-            raise ValueError("account_equity is required")
+            raise ValueError("账户净值必须大于 0")
         cash = _optional_nonnegative_number(values.get("cash"))
         market_value = _optional_nonnegative_number(values.get("market_value"))
         source = _clean_choice(
