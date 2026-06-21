@@ -500,11 +500,13 @@ def test_entry_display_uses_explicit_missing_fields() -> None:
 
 def test_zone_formatters_are_shared() -> None:
     assert format_buy_zone(BUY_ZONE) == "$90.00 - $100.00"
+    assert format_buy_zone({}) == "暂缺"
     assert format_zone_status("IN_BUY_ZONE") == "买区内"
     assert format_zone_status("BELOW_BUY_ZONE") == "低于估值参考，待复核"
     assert format_zone_status("ZONE_MISSING") == "无法判断"
     assert format_zone_status("NEW_PRICE_POSITION") == "无法判断"
     assert format_zone_status("人工备注") == "人工备注"
+    assert format_zone_status("") == "无法判断"
 
 
 def test_dashboard_watchlist_entry_cell_shows_price_position_without_action_text() -> None:

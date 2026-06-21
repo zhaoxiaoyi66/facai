@@ -456,7 +456,7 @@ def _zone_text(lower: float | None, upper: float | None) -> str:
         return f"<= {_price_text(upper)}"
     if lower is not None:
         return f">= {_price_text(lower)}"
-    return "N/A"
+    return "暂缺"
 
 
 def format_zone_status(zone_status: Any) -> str:
@@ -465,7 +465,7 @@ def format_zone_status(zone_status: Any) -> str:
         return PRICE_POSITIONS[text]
     if _looks_like_internal_code(text):
         return "无法判断"
-    return text or "N/A"
+    return text or "无法判断"
 
 
 def _looks_like_internal_code(value: object) -> bool:
@@ -787,7 +787,7 @@ def _zone_number(zone: Any, key: str) -> float | None:
 
 def _price_text(value: float | None) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"${number:,.2f}"
+    return "暂缺" if number is None else f"${number:,.2f}"
 
 
 def _value_or_zero(value: float | None) -> float:
