@@ -118,3 +118,9 @@ def test_stock_detail_drawdown_status_does_not_show_raw_internal_codes() -> None
     assert stock_detail._portfolio_system_action_text({"systemAction": "NEW_SYSTEM_ACTION"}) == "未生成"
     assert stock_detail._portfolio_system_action_text({"systemAction": "人工复核"}) == "人工复核"
     assert stock_detail._drawdown_state_display("人工复核") == "人工复核"
+    assert stock_detail._portfolio_translated_reasons(["NEW_INTERNAL_REASON"]) == ["其他原因"]
+    assert stock_detail._portfolio_translated_reasons(["人工原因"]) == ["人工原因"]
+    assert stock_detail._review_status_label("NEW_REVIEW_STATUS") == "待复核"
+    assert stock_detail._review_status_label("人工状态") == "人工状态"
+    assert stock_detail._severity_label("NEW_SEVERITY") == "信息"
+    assert stock_detail._severity_label("人工等级") == "人工等级"

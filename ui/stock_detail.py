@@ -372,7 +372,7 @@ def _portfolio_translated_reasons(value: object) -> list[str]:
         "risk_rating": "风险评级",
     }
     items = value if isinstance(value, list) else []
-    return [labels.get(str(item), str(item)) for item in items]
+    return [labels.get(str(item), _stock_detail_unknown_display_text(item, "其他原因")) for item in items]
 
 
 def _portfolio_quantity_text(value: object) -> str:
@@ -816,13 +816,16 @@ def _metric_source_label(snapshot: dict, key: str) -> str:
 
 
 def _review_status_label(value: object) -> str:
+    key = str(value or "").strip()
+    if not key:
+        return "待补"
     return {
         "pending_review": "待复核",
         "approved": "已确认",
         "rejected": "已驳回",
         "manually_corrected": "手动修正",
         "stale": "已过期",
-    }.get(str(value or ""), _display_table_text(value))
+    }.get(key, _stock_detail_unknown_display_text(key, "待复核"))
 
 
 def _data_status_rows(snapshot: dict) -> list[dict]:
@@ -3113,7 +3116,9 @@ def _parse_optional_number(value: object, is_percent: bool = False) -> float | N
 
 
 def _severity_label(severity: str) -> str:
-    return {"high": "高", "medium": "中", "info": "信息"}.get(severity, severity)
+    return {"high": "高", "medium": "中", "info": "信息"}.get(
+        severity, _detail_unknown_display_text(severity, "信息")
+    )
 
 
 def _render_short_list(items: list[str], empty: str) -> None:
