@@ -94,6 +94,11 @@ def test_trade_activity_monthly_calendar_and_day_html_render_counts() -> None:
     assert "tradeActivityDate=2026-06-15" in html
     assert "NVDA" in day_html
     assert "$200.00" in day_html
+    assert "方向" in day_html
+    assert "买入" in day_html
+    assert "卖出" in day_html
+    assert ">side<" not in day_html
+    assert ">quantity<" not in day_html
 
 
 def test_trade_activity_ui_localizes_advisory_levels() -> None:

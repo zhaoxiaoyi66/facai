@@ -371,10 +371,11 @@ def _render_trade_activity_day_detail(activity: dict) -> None:
 def _trade_activity_day_table_html(trades: list[dict]) -> str:
     if not trades:
         return '<div class="trade-journal-empty"><strong>当天无交易</strong><span>没有需要复盘的操作频率。</span></div>'
-    headers = ["时间", "ticker", "side", "quantity", "price", "notional", "reason", "advisory", "note"]
+    headers = ["时间", "股票", "方向", "数量", "价格", "金额", "原因", "提醒", "备注"]
     rows = []
     for trade in trades:
         side = "buy" if str(trade.get("action_type") or "").lower() in {"buy", "add"} else "sell"
+        side_text = "买入" if side == "buy" else "卖出"
         quantity = _number(trade.get("quantity")) or 0
         price = _number(trade.get("price")) or 0
         notional = quantity * price
@@ -385,7 +386,7 @@ def _trade_activity_day_table_html(trades: list[dict]) -> str:
             "<tr>"
             f"<td>{escape(_activity_time_text(trade))}</td>"
             f"<td class='symbol'>{escape(str(trade.get('symbol') or ''))}</td>"
-            f"<td>{escape(side)}</td>"
+            f"<td>{escape(side_text)}</td>"
             f"<td>{_quantity_text(quantity)}</td>"
             f"<td>{format_currency(price)}</td>"
             f"<td>{format_currency(notional)}</td>"
