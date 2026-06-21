@@ -8632,8 +8632,17 @@ def test_monitor_log_start_only_after_timeout_is_interrupted() -> None:
     rows = weekend_spread._aggregate_monitor_log_results(lines, now=datetime(2026, 6, 20, 16, 55, tzinfo=timezone.utc))
 
     assert rows[0]["结果"] == "疑似中断"
-    assert rows[0]["错误"] == "未知错误"
+    assert rows[0]["错误"] == "未返回错误原因"
     assert weekend_spread._monitor_recent_result_summary_text(rows[0]) == "最近扫描疑似中断：06-21 00:40 HKT｜原因：任务中断"
+
+
+def test_weekend_spread_failure_copy_does_not_use_unknown_error_placeholder() -> None:
+    assert weekend_spread._localized_monitor_error("") == "未返回错误原因"
+    assert weekend_spread._localized_monitor_error("unclassified") == "未识别错误原因"
+    source = inspect.getsource(weekend_spread._run_current_closed_news_refresh_with_progress)
+
+    assert "未返回错误原因" in source
+    assert "未知错误" not in source
 
 
 def test_recent_monitor_success_summary_is_compact() -> None:

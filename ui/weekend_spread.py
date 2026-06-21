@@ -2456,7 +2456,7 @@ def _monitor_duration_text(value: object) -> str:
 def _localized_monitor_error(value: object) -> str:
     text = str(value or "").strip()
     if not text:
-        return "未知错误"
+        return "未返回错误原因"
     lowered = text.lower()
     if "timeout" in lowered or "request" in lowered or "binance" in lowered or "connection" in lowered:
         return "Binance 请求失败"
@@ -2466,7 +2466,7 @@ def _localized_monitor_error(value: object) -> str:
         return "快照写入失败"
     if "lock" in lowered or "interrupted" in lowered:
         return "任务中断"
-    return "未知错误"
+    return "未识别错误原因"
 
 
 def _parse_monitor_log_line(line: str) -> dict[str, object]:
@@ -4750,7 +4750,7 @@ def _run_current_closed_news_refresh_with_progress(
         elif stage == "done":
             lines.append(f"- {symbol}：{event.get('news_status') or '数据不足'}")
         elif stage == "failed":
-            lines.append(f"- {symbol}：接口失败，{event.get('error') or '未知错误'}")
+            lines.append(f"- {symbol}：接口失败，{event.get('error') or '未返回错误原因'}")
         progress_bar.progress(min(1.0, completed / total if total else 1.0))
         summary = event.get("summary") or {}
         summary_box.caption(
