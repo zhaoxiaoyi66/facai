@@ -42,6 +42,19 @@ SIGNAL_TYPE_DISPLAY_ALIASES = {
 
 RESULT_LABELS = ["有效", "震荡有效", "买早", "追高", "无效", "数据不足"]
 
+RESULT_LABEL_DISPLAY_ALIASES = {
+    "VALID": "有效",
+    "EFFECTIVE": "有效",
+    "CHOPPY_VALID": "震荡有效",
+    "BUY_EARLY": "买早",
+    "CHASE": "追高",
+    "CHASING": "追高",
+    "INVALID": "无效",
+    "DATA_INSUFFICIENT": "数据不足",
+    "DATA_MISSING": "数据不足",
+    "INSUFFICIENT_DATA": "数据不足",
+}
+
 
 class SignalPerformanceStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:
@@ -344,7 +357,7 @@ def signal_performance_table_rows(records: list[dict[str, Any]]) -> list[dict[st
                 "5日收益": _pct_text(record.get("return_5d_pct")),
                 "20日收益": _pct_text(record.get("return_20d_pct")),
                 "最大回撤": _pct_text(record.get("max_drawdown_pct")),
-                "结果判定": str(record.get("result_label") or "数据不足"),
+                "结果判定": result_label_display(record.get("result_label")),
             }
         )
     return rows
@@ -523,6 +536,20 @@ def signal_type_display_label(value: object) -> str:
         return SIGNAL_TYPE_DISPLAY_ALIASES[text]
     if all(char.isascii() and (char.isalnum() or char in {"_", "-", " "}) for char in text):
         return "未标注"
+    return text
+
+
+def result_label_display(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "nan", "n/a", "null", "unknown"}:
+        return "数据不足"
+    if text in RESULT_LABELS:
+        return text
+    upper = text.upper()
+    if upper in RESULT_LABEL_DISPLAY_ALIASES:
+        return RESULT_LABEL_DISPLAY_ALIASES[upper]
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-", " "}) for char in text):
+        return "待复核"
     return text
 
 

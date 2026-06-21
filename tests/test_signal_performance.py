@@ -212,17 +212,33 @@ def test_legacy_english_signal_type_and_unknown_codes_are_localized(tmp_path: Pa
         signal_price=200,
         price_source="本地日线",
     )
+    english_signal["result_label"] = "DATA_INSUFFICIENT"
+    internal_signal["result_label"] = "NEW_INTERNAL_RESULT"
+    manual_result_signal = {
+        "symbol": "NOW",
+        "signal_date": "2026-01-03",
+        "signal_type": "手动信号",
+        "signal_label": "",
+        "signal_price": 300,
+        "price_source": "手动",
+        "result_label": "人工观察",
+    }
 
-    rows = signal_performance_table_rows([english_signal, internal_signal])
+    rows = signal_performance_table_rows([english_signal, internal_signal, manual_result_signal])
     row_text = str(rows)
 
     assert rows[0]["信号类型"] == "研报中心"
     assert rows[1]["信号类型"] == "未标注"
+    assert rows[0]["结果判定"] == "数据不足"
+    assert rows[1]["结果判定"] == "待复核"
+    assert rows[2]["结果判定"] == "人工观察"
     assert signal_type_display_label("Price Position") == "研报中心"
     assert signal_type_display_label("AI Stock Radar Research") == "研报中心"
     assert signal_type_display_label("NEW_INTERNAL_SIGNAL") == "未标注"
     assert "AI Stock Radar" not in row_text
     assert "NEW_INTERNAL_SIGNAL" not in row_text
+    assert "DATA_INSUFFICIENT" not in row_text
+    assert "NEW_INTERNAL_RESULT" not in row_text
 
 
 def test_infer_price_position_signal_label_uses_chinese_buckets() -> None:
