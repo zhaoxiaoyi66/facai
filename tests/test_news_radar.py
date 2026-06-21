@@ -20,7 +20,7 @@ from data.news_radar import (
     source_link_text,
     trade_news_check,
 )
-from ui.news_radar import _news_detail_rows, _price_reaction_line, _source_line, _title_parts
+from ui.news_radar import _news_detail_rows, _news_symbol_label, _price_reaction_line, _source_line, _title_parts
 
 
 class FakeNewsClient:
@@ -78,6 +78,13 @@ def test_news_card_link_falls_back_when_url_is_missing() -> None:
     assert item["url"] == ""
     assert source_link_text(item) == MISSING_URL_TEXT
     assert MISSING_URL_TEXT in _source_line(item)
+
+
+def test_news_symbol_label_uses_chinese_placeholders() -> None:
+    assert _news_symbol_label("") == "未标明股票"
+    assert _news_symbol_label(None) == "未标明股票"
+    assert _news_symbol_label("MARKET") == "市场新闻"
+    assert _news_symbol_label("NVDA") == "NVDA"
 
 
 def test_fmp_news_missing_key_copy_hides_env_key_name() -> None:

@@ -170,7 +170,8 @@ def _render_stats(store: NewsRadarStore, items: list[dict[str, Any]], symbol_gro
 
 
 def _render_news_card(item: dict[str, Any], *, store: NewsRadarStore, symbol_groups: dict[str, set[str]]) -> None:
-    symbol = _clean(item.get("symbol")) or "--"
+    symbol = _clean(item.get("symbol"))
+    symbol_label = _news_symbol_label(symbol)
     event_type = _clean(item.get("event_type")) or "待判断"
     sentiment = _clean(item.get("sentiment_label")) or "待判断"
     impact = _clean(item.get("impact_level")) or "低"
@@ -182,7 +183,7 @@ def _render_news_card(item: dict[str, Any], *, store: NewsRadarStore, symbol_gro
     tone = _card_tone(item, symbol_groups)
 
     with st.container(border=True):
-        st.markdown(f"**{symbol}｜{event_type}｜{sentiment}｜{impact}**")
+        st.markdown(f"**{symbol_label}｜{event_type}｜{sentiment}｜{impact}**")
         st.markdown(f"### {title_zh}")
         if translation_note:
             st.caption(translation_note)
@@ -243,7 +244,7 @@ def _render_regular_news(items: list[dict[str, Any]]) -> None:
         for item in regular[:80]:
             title_zh, original_title, note = _title_parts(item)
             line = _source_line(item)
-            st.markdown(f"**{_clean(item.get('symbol')) or '--'}｜{title_zh}**")
+            st.markdown(f"**{_news_symbol_label(_clean(item.get('symbol')))}｜{title_zh}**")
             if note:
                 st.caption(note)
             if original_title and original_title != title_zh:
@@ -353,6 +354,15 @@ def _relevance_reason(item: dict[str, Any], symbol_groups: dict[str, set[str]]) 
 def _source_line(item: dict[str, Any]) -> str:
     source = _clean(item.get("source") or item.get("site")) or "未知来源"
     return f"{source} · {_format_time(item.get('published_at'))} · {source_link_text(item)}"
+
+
+def _news_symbol_label(symbol: object) -> str:
+    text = _clean(symbol)
+    if not text:
+        return "未标明股票"
+    if text == "MARKET":
+        return "市场新闻"
+    return text
 
 
 def _price_reaction_line(context: dict[str, Any] | None) -> str:
