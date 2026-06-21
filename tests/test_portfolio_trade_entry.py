@@ -170,7 +170,7 @@ def test_buy_gate_advisory_warnings_do_not_show_raw_decision_codes(decision: str
 
     assert "人工复核记录" in text
     assert f"结论为 {decision}" not in text
-    assert not any(token in text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
+    assert not any(token in text for token in ("\u934f", "\u93b6", "\u6d93", "\u74d2", "\u7edb"))
 
 
 def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
@@ -1477,7 +1477,7 @@ def test_planned_ladder_buy_treats_radar_data_missing_or_stale_as_advisory() -> 
         assert "价格区间和买区提示数据缺失或过期" in warning_text
         assert "Radar 买区" not in warning_text
         assert "advisory warning" not in warning_text
-        assert not any(token in warning_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
+        assert not any(token in warning_text for token in ("\u934f", "\u93b6", "\u6d93", "\u74d2", "\u7edb"))
         assert result["synced"] is True
         assert position is not None
         assert position["quantity"] == 50
@@ -1712,7 +1712,7 @@ def test_starter_position_treats_radar_data_missing_or_stale_as_advisory(monkeyp
         assert "符合计划约束" in warning_text
         assert "建仓通过" not in warning_text
         assert "starter sync" not in warning_text
-        assert not any(token in warning_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
+        assert not any(token in warning_text for token in ("\u934f", "\u93b6", "\u6d93", "\u74d2", "\u7edb"))
         assert result["synced"] is True
         assert position is not None
 

@@ -1123,4 +1123,4 @@ def test_buy_zone_context_visible_text_has_no_mojibake() -> None:
 
     assert "小仓观察参考" in visible_text
     assert "买区由技术结构" in visible_text
-    assert not any(token in visible_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
+    assert not any(token in visible_text for token in ("\u934f", "\u93b6", "\u6d93", "\u74d2", "\u7edb"))

@@ -7363,7 +7363,7 @@ def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
     )
 
     assert "FINAL" not in frame.to_string()
-    assert "瑙傚療" not in frame.to_string()
+    assert "\u7459\u5085\u7642" not in frame.to_string()
 
 
 def test_refresh_price_preserves_afterhours_anchor_from_snapshot_rows() -> None:
