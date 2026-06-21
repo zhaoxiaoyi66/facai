@@ -211,7 +211,8 @@ def test_news_detail_rows_localize_legacy_classification_codes() -> None:
 def test_news_classification_fallback_hides_unknown_internal_codes() -> None:
     assert _event_type_label("new_internal_event") == "待判断"
     assert _sentiment_label("UNMAPPED_SENTIMENT") == "待判断"
-    assert _impact_label("future_impact_code") == "低"
+    assert _impact_label("future_impact_code") == "待判断"
+    assert _impact_label("low") == "低"
     assert _event_type_label("人工分类") == "人工分类"
 
 

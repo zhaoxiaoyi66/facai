@@ -514,7 +514,7 @@ def _sentiment_label(value: Any) -> str:
 
 
 def _impact_label(value: Any) -> str:
-    return _classification_label(value, IMPACT_LABELS, "低")
+    return _classification_label(value, IMPACT_LABELS, "待判断")
 
 
 def _clean(value: Any) -> str:
