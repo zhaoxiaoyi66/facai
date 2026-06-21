@@ -2234,22 +2234,7 @@ def _monitor_task_state_for_health(status_payload: dict[str, object]) -> dict[st
 def _render_monitor_health_card(health: dict[str, object], latest_run: dict | None, source_rows: list[dict], ignored: dict[str, dict]) -> None:
     summary = dict((latest_run or {}).get("summary") or {})
     status = str(health.get("health_status") or "状态未知")
-    run_mode_label = str(health.get("run_mode_label") or "").strip()
-    mode = {
-        MONITOR_MODE_SCHEDULER: "Windows 任务计划",
-        MONITOR_MODE_LOOP_PROCESS: "后台进程",
-        MONITOR_MODE_MANUAL_ONCE: "手动扫描",
-        "loop": "后台进程",
-        "manual": "手动扫描",
-    }.get(str(health.get("monitor_mode") or ""), str(health.get("monitor_mode") or "未启动"))
-    if run_mode_label:
-        mode = run_mode_label
-    elif str(health.get("monitor_mode") or "") == MONITOR_MODE_SCHEDULER and health.get("silent_mode"):
-        mode = "Windows 任务计划 · 静默模式"
-    elif str(health.get("monitor_mode") or "") == MONITOR_MODE_SCHEDULER and health.get("hidden_window"):
-        mode = "Windows 任务计划 · 隐藏窗口模式"
-    elif str(health.get("monitor_mode") or "") == MONITOR_MODE_LOOP_PROCESS and "--quiet" in str(health.get("command") or ""):
-        mode = "后台进程 · 静默模式"
+    mode = _monitor_mode_label(health)
     interval = _number(health.get("interval_minutes")) or DEFAULT_MONITOR_INTERVAL_MINUTES
     last_success = _short_hkt_time(health.get("last_success_at")) if health.get("last_success_at") else "暂无"
     minutes_since = _number(health.get("minutes_since_success"))
@@ -2287,6 +2272,26 @@ def _render_monitor_health_card(health: dict[str, object], latest_run: dict | No
         st.info(reason or "这是一次手动扫描。如需自动更新，请安装 3 分钟监控任务。")
     elif status == HEALTH_TASK_RUNNING:
         st.info(reason or "3 分钟监控任务已静默运行，不会弹出窗口。页面正在读取最近快照。")
+
+
+def _monitor_mode_label(health: dict[str, object]) -> str:
+    run_mode_label = str(health.get("run_mode_label") or "").strip()
+    if run_mode_label:
+        return run_mode_label
+    mode = str(health.get("monitor_mode") or "").strip()
+    if mode == MONITOR_MODE_SCHEDULER and health.get("silent_mode"):
+        return "Windows 任务计划 · 静默模式"
+    if mode == MONITOR_MODE_SCHEDULER and health.get("hidden_window"):
+        return "Windows 任务计划 · 隐藏窗口模式"
+    if mode == MONITOR_MODE_LOOP_PROCESS and "--quiet" in str(health.get("command") or ""):
+        return "后台进程 · 静默模式"
+    return {
+        MONITOR_MODE_SCHEDULER: "Windows 任务计划",
+        MONITOR_MODE_LOOP_PROCESS: "后台进程",
+        MONITOR_MODE_MANUAL_ONCE: "手动扫描",
+        "loop": "后台进程",
+        "manual": "手动扫描",
+    }.get(mode, _unknown_display_text(mode, "未启动"))
 
 
 def _monitor_next_expected_text(health: dict[str, object]) -> str:

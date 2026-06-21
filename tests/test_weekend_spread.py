@@ -130,6 +130,7 @@ from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
     HEALTH_MANUAL_COMPLETE,
     HEALTH_TASK_RUNNING,
+    MONITOR_MODE_LOOP_PROCESS,
     MONITOR_MODE_MANUAL_ONCE,
     MONITOR_MODE_SCHEDULER,
     append_monitor_run,
@@ -8018,6 +8019,14 @@ def test_weekend_monitor_health_evaluation_statuses() -> None:
     assert evaluate_monitor_health({}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "未启动"
     assert evaluate_monitor_health({**base, "consecutive_failures": 3}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "最近失败"
     assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc), scheduler_exists=False)["health_status"] == "未启动"
+
+
+def test_weekend_monitor_mode_label_prefers_silent_runtime_copy() -> None:
+    assert weekend_spread._monitor_mode_label({"monitor_mode": MONITOR_MODE_SCHEDULER, "silent_mode": True}) == "Windows 任务计划 · 静默模式"
+    assert weekend_spread._monitor_mode_label({"monitor_mode": MONITOR_MODE_SCHEDULER, "hidden_window": True}) == "Windows 任务计划 · 隐藏窗口模式"
+    assert weekend_spread._monitor_mode_label({"monitor_mode": MONITOR_MODE_LOOP_PROCESS, "command": "--quiet"}) == "后台进程 · 静默模式"
+    assert weekend_spread._monitor_mode_label({"monitor_mode": "NEW_MONITOR_MODE"}) == "未启动"
+    assert weekend_spread._monitor_mode_label({"monitor_mode": "人工模式"}) == "人工模式"
 
 
 def test_weekend_monitor_scheduled_task_command_marks_scheduler_source() -> None:
