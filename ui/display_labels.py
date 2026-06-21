@@ -20,7 +20,7 @@ DISPLAY_LABELS: dict[str, str] = {
     "PROVISIONAL": "临时锚点",
     "None": "缺少数据",
     "DATA_INSUFFICIENT": "数据不足",
-    "DATA_MISSING": "数据不足",
+    "DATA_MISSING": "数据缺失",
     "risk_note": "备注",
     "mapping_confidence": "映射可信度",
     "TRADINGVIEW_WEBHOOK_SAMPLE": "TradingView Webhook 样本",
