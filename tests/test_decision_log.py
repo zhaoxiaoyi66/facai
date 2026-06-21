@@ -21,6 +21,7 @@ from data.decision_log import (
     save_decision_snapshot_from_bundle,
 )
 from data.portfolio_roles import ROLE_SATELLITE
+from data.trade_safety_gate import build_trade_safety_snapshot
 from data.trade_safety_gate import _clean_decision_mood as clean_trade_safety_decision_mood
 from scoring.final_decision import BUY_ACTIONS
 from scoring.final_decision_adapter import build_final_decision_bundle
@@ -329,6 +330,23 @@ class DecisionLogTests(unittest.TestCase):
 
     def test_trade_safety_gate_accepts_neutral_decision_mood(self) -> None:
         self.assertEqual(clean_trade_safety_decision_mood("NEUTRAL"), "NEUTRAL")
+
+    def test_trade_safety_gate_validation_errors_are_chinese(self) -> None:
+        with self.assertRaises(ValueError) as bad_mood:
+            clean_trade_safety_decision_mood("raw_bad")
+        self.assertEqual(str(bad_mood.exception), "交易心理标签无效")
+
+        with self.assertRaises(ValueError) as bad_number:
+            build_trade_safety_snapshot("NVDA", "sell", {"planned_sell_pct": "bad-number"})
+        self.assertEqual(str(bad_number.exception), "计划卖出比例需要填写数字")
+
+        with self.assertRaises(ValueError) as bad_integer:
+            build_trade_safety_snapshot("NVDA", "sell", {"reentry_time_stop_days": "bad-int"})
+        self.assertEqual(str(bad_integer.exception), "回补等待天数需要填写整数")
+
+        with self.assertRaises(ValueError) as negative_value:
+            build_trade_safety_snapshot("NVDA", "sell", {"reentry_pullback_price": -1})
+        self.assertEqual(str(negative_value.exception), "回踩回补价格不能为负数")
 
     def test_trade_journal_store_saves_radar_buy_gate_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
