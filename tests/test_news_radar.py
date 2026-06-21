@@ -20,7 +20,16 @@ from data.news_radar import (
     source_link_text,
     trade_news_check,
 )
-from ui.news_radar import _news_detail_rows, _news_symbol_label, _price_reaction_line, _source_line, _title_parts
+from ui.news_radar import (
+    _event_type_label,
+    _impact_label,
+    _news_detail_rows,
+    _news_symbol_label,
+    _price_reaction_line,
+    _sentiment_label,
+    _source_line,
+    _title_parts,
+)
 
 
 class FakeNewsClient:
@@ -190,6 +199,13 @@ def test_news_detail_rows_localize_legacy_classification_codes() -> None:
     assert details["影响等级"] == "重大"
     for raw in ("opinion", "negative", "major", "None"):
         assert raw not in joined
+
+
+def test_news_classification_fallback_hides_unknown_internal_codes() -> None:
+    assert _event_type_label("new_internal_event") == "待判断"
+    assert _sentiment_label("UNMAPPED_SENTIMENT") == "待判断"
+    assert _impact_label("future_impact_code") == "低"
+    assert _event_type_label("人工分类") == "人工分类"
 
 
 def test_price_reaction_missing_context_uses_specific_copy() -> None:

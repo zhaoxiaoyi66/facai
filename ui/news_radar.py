@@ -497,7 +497,11 @@ def _classification_label(value: Any, labels: dict[str, str], fallback: str) -> 
     if not text:
         return fallback
     normalized = text.lower().replace("-", "_").replace(" ", "_")
-    return labels.get(normalized, text)
+    if normalized in labels:
+        return labels[normalized]
+    if all(char.isascii() and (char.isalnum() or char in {"_", "-"}) for char in text):
+        return fallback
+    return text
 
 
 def _event_type_label(value: Any) -> str:
