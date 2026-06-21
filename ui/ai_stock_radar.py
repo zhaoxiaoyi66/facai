@@ -2157,6 +2157,7 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
         "BLOCK_CHASE": "追高风险",
         "RISK_REVIEW": "暂不参与",
         "DATA_INSUFFICIENT": "数据不足",
+        "DATA_MISSING": "数据缺失",
         "AVOID": "暂不参与",
     }
     if context_action in context_map:
@@ -2181,7 +2182,7 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
         "ALLOW_BUY": "小仓观察建议",
         "WAIT": "等待确认",
         "BLOCK_CHASE": "追高风险",
-        "DATA_MISSING": "数据不足",
+        "DATA_MISSING": "数据缺失",
         "AVOID": "暂不参与",
     }.get(decision, "等待确认")
 
@@ -3546,8 +3547,10 @@ def _core_status(row: dict[str, Any]) -> str:
             or display.get("entry_context_status")
             or ""
         ).strip().upper()
-        if display_action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+        if display_action == "DATA_INSUFFICIENT":
             return "数据不足"
+        if display_action == "DATA_MISSING":
+            return "数据缺失"
         if display_action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
             return "未生成买区"
         if display_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
@@ -3577,8 +3580,10 @@ def _core_status(row: dict[str, Any]) -> str:
     decision = str(row.get("decision") or "")
     structure = str(row.get("technical_structure_status") or "")
     combined = f"{entry_label} {interpretation}"
-    if decision in {"DATA_MISSING", "DATA_INSUFFICIENT"}:
+    if decision == "DATA_INSUFFICIENT":
         return "数据不足"
+    if decision == "DATA_MISSING":
+        return "数据缺失"
     if decision in {"NO_BUY_ZONE", "ZONE_MISSING"}:
         return "未生成买区"
     if price_position == "IN_CHASE_ZONE" or decision == "BLOCK_CHASE":
@@ -3604,8 +3609,10 @@ def _buy_zone_context_core_status(context: dict[str, Any] | None) -> str:
     if not context:
         return ""
     action = str(context.get("current_action") or context.get("currentAction") or "").strip().upper()
-    if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+    if action == "DATA_INSUFFICIENT":
         return "数据不足"
+    if action == "DATA_MISSING":
+        return "数据缺失"
     if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
         return "未生成买区"
     if action == "BLOCK_CHASE":

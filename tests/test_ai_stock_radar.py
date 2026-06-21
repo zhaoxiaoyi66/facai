@@ -784,7 +784,7 @@ def test_list_core_status_prefers_unified_buy_zone_context() -> None:
     assert radar_ui._core_status({"decision": "ALLOW_BUY", "buy_zone_context": {"current_action": "BLOCK_CHASE"}}) == "防追高"
     assert radar_ui._core_status({"decision": "BLOCK_CHASE", "buy_zone_context": {"current_action": "ALLOW_SMALL_BUY"}}) == "可买"
     assert radar_ui._core_status({"buy_zone_context": {"current_action": "DATA_INSUFFICIENT"}}) == "数据不足"
-    assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "DATA_MISSING"}}) == "数据不足"
+    assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "DATA_MISSING"}}) == "数据缺失"
     assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "NO_BUY_ZONE"}}) == "未生成买区"
     assert radar_ui._core_status({"decision": "AVOID"}) == "回避"
 
@@ -1920,10 +1920,12 @@ def test_ai_radar_fallback_action_copy_uses_advisory_language() -> None:
     rating = radar_ui._rating_text({}, action_result, {})
     localized = radar_ui._localize_report_text("ALLOW_BUY")
     missing = radar_ui._localize_report_text("DATA_MISSING")
+    missing_rating = radar_ui._rating_text({"decision": "DATA_MISSING"}, None, {})
 
     assert rating == "小仓观察建议"
     assert localized == "小仓观察建议"
     assert missing == "数据缺失"
+    assert missing_rating == "数据缺失"
     assert "允许" not in rating
     assert "允许" not in localized
 
