@@ -767,7 +767,7 @@ def _radar_decision_text(value: object) -> str:
         "AVOID": "风险较高",
         "DATA_MISSING": "数据缺失",
         "DATA_INSUFFICIENT": "数据不足",
-    }.get(text, "待复核" if not text else text)
+    }.get(text, _trade_unknown_display_text(value, "待复核"))
 
 
 def _radar_data_status_text(value: object) -> str:
@@ -780,7 +780,7 @@ def _radar_data_status_text(value: object) -> str:
         "DATA_MISSING": "数据缺失",
         "DATA_INSUFFICIENT": "数据不足",
         "STALE": "数据过期",
-    }.get(text, "待复核" if not text else text)
+    }.get(text, _trade_unknown_display_text(value, "待复核"))
 
 
 def _score_text(value: object) -> str:

@@ -151,9 +151,11 @@ def test_trade_journal_signal_labels_do_not_show_raw_internal_codes() -> None:
         trade_journal._discipline_message_text("NEW_DISCIPLINE_MESSAGE"),
         trade_journal._discipline_status_text("NEW_DISCIPLINE_STATUS"),
         trade_journal._sell_reason_text("NEW_SELL_REASON"),
+        trade_journal._radar_decision_text("NEW_RADAR_DECISION"),
+        trade_journal._radar_data_status_text("NEW_RADAR_DATA_STATUS"),
     ]
 
-    assert labels == ["其他原因", "未记录", "未记录", "未记录", "—", "—"]
+    assert labels == ["其他原因", "未记录", "未记录", "未记录", "—", "—", "待复核", "待复核"]
     assert trade_journal._signal_reason_label("人工备注") == "人工备注"
     assert trade_journal._fundamental_change_labels_for_entry({"fundamental_change_types": ["NEW_FUNDAMENTAL_CHANGE"]}) == ["其他"]
     assert trade_journal._sell_reason_tag_labels_for_entry({"sell_reason_tags": ["NEW_SELL_REASON_TAG"]}) == ["其他"]
@@ -166,6 +168,8 @@ def test_trade_journal_signal_labels_do_not_show_raw_internal_codes() -> None:
     assert trade_journal._performance_action_text("人工动作") == "人工动作"
     assert trade_journal._mood_text("人工心态") == "人工心态"
     assert trade_journal._volume_price_zone_source_text("人工来源") == "人工来源"
+    assert trade_journal._radar_decision_text("人工判断") == "人工判断"
+    assert trade_journal._radar_data_status_text("人工状态") == "人工状态"
     for label in labels:
         assert "NEW_" not in label
 
