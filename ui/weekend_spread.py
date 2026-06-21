@@ -2511,7 +2511,9 @@ def _monitor_source_text(value: object) -> str:
         return "任务计划"
     if text == "loop":
         return "后台进程"
-    return text or "未知"
+    if not text:
+        return "未记录来源"
+    return _unknown_display_text(text, "未识别来源")
 
 
 def _monitor_log_status_text(value: object) -> str:
@@ -2521,7 +2523,7 @@ def _monitor_log_status_text(value: object) -> str:
         "success": "成功",
         "failed": "失败",
         "skipped": "跳过",
-    }.get(text, _unknown_display_text(text, "未知"))
+    }.get(text, _unknown_display_text(text, "未识别监控状态"))
 
 
 def _render_monitor_top_cards(rows: list[dict]) -> None:
