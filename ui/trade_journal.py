@@ -1481,7 +1481,7 @@ def _fundamental_change_labels_for_entry(entry: dict | None) -> list[str]:
         parsed = list(raw)
     else:
         parsed = []
-    return [FUNDAMENTAL_CHANGE_LABELS.get(str(item), str(item)) for item in parsed if str(item).strip()]
+    return [FUNDAMENTAL_CHANGE_LABELS.get(str(item), _trade_unknown_display_text(item, "其他")) for item in parsed if str(item).strip()]
 
 
 def _sell_reason_tag_labels_for_entry(entry: dict | None) -> list[str]:
@@ -1497,7 +1497,7 @@ def _sell_reason_tag_labels_for_entry(entry: dict | None) -> list[str]:
         parsed = list(raw)
     else:
         parsed = []
-    return [SELL_REASON_TAG_LABELS.get(str(item), str(item)) for item in parsed if str(item).strip()]
+    return [SELL_REASON_TAG_LABELS.get(str(item), _trade_unknown_display_text(item, "其他")) for item in parsed if str(item).strip()]
 
 
 def _combined_sell_reason_note(entry: dict | None) -> str:
@@ -3430,7 +3430,7 @@ def _sell_context_type_text(value: object) -> str:
 
 def _fundamental_change_text(entry: dict, snapshot: dict | None = None) -> str:
     values = _structured_fundamental_change_values(entry, snapshot)
-    labels = [FUNDAMENTAL_CHANGE_LABELS.get(str(item), str(item)) for item in values if str(item).strip()]
+    labels = [FUNDAMENTAL_CHANGE_LABELS.get(str(item), _trade_unknown_display_text(item, "其他")) for item in values if str(item).strip()]
     return "、".join(labels) if labels else "未记录"
 
 

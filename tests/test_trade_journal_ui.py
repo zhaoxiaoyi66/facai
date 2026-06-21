@@ -132,6 +132,11 @@ def test_trade_journal_signal_labels_do_not_show_raw_internal_codes() -> None:
 
     assert labels == ["其他原因", "未记录", "未记录", "未记录", "—", "—"]
     assert trade_journal._signal_reason_label("人工备注") == "人工备注"
+    assert trade_journal._fundamental_change_labels_for_entry({"fundamental_change_types": ["NEW_FUNDAMENTAL_CHANGE"]}) == ["其他"]
+    assert trade_journal._sell_reason_tag_labels_for_entry({"sell_reason_tags": ["NEW_SELL_REASON_TAG"]}) == ["其他"]
+    assert trade_journal._fundamental_change_text({"fundamental_change_types": ["NEW_FUNDAMENTAL_CHANGE"]}) == "其他"
+    assert trade_journal._fundamental_change_labels_for_entry({"fundamental_change_types": ["人工变化"]}) == ["人工变化"]
+    assert trade_journal._sell_reason_tag_labels_for_entry({"sell_reason_tags": ["人工标签"]}) == ["人工标签"]
     for label in labels:
         assert "NEW_" not in label
 
