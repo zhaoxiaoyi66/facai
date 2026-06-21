@@ -8655,7 +8655,7 @@ def _afterhours_cache_text(value: object) -> str:
         "CACHE_CORRUPT": "盘后缓存损坏",
         "CACHE_DATE_MISMATCH": "盘后缓存日期不匹配",
         "NOT_FETCHED": "未读取",
-    }.get(code, code or "未知")
+    }.get(code, _unknown_display_text(value, "未知缓存状态"))
 
 
 def _afterhours_spread_text(value: object) -> str:
