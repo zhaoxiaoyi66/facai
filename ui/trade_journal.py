@@ -2949,7 +2949,7 @@ def _group_label(group_key: str, value: object) -> str:
 
 
 def _performance_action_text(value: object) -> str:
-    return {"sell": "清仓", "trim": "减仓"}.get(str(value or ""), _text(value))
+    return {"sell": "清仓", "trim": "减仓"}.get(str(value or ""), _trade_unknown_display_text(value, "未记录"))
 
 
 def _mood_text(value: object) -> str:
@@ -2967,7 +2967,7 @@ def _mood_text(value: object) -> str:
         "panic_sell": "恐慌卖出",
         "regret_chase": "卖飞后追回",
         "uncertainty": "不确定",
-    }.get(mood, _text(mood))
+    }.get(mood, _trade_unknown_display_text(mood, "未记录"))
 
 
 def _days_text(value: object) -> str:
@@ -3586,7 +3586,7 @@ def _volume_price_zone_source_text(value: object) -> str:
         "upstream": "买区快照",
         "fallback": "本地回退区间",
         "missing": "缺失",
-    }.get(str(value or "").strip(), _text(value))
+    }.get(str(value or "").strip(), _trade_unknown_display_text(value, "未记录"))
 
 
 def _entry_text_value(value: object) -> str:
