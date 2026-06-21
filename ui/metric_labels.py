@@ -474,28 +474,37 @@ def resolution_status_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
         return "暂缺"
-    return RESOLUTION_STATUS_DISPLAY_MAP.get(text, RESOLUTION_STATUS_DISPLAY_MAP.get(text.lower(), f"未映射状态：{text}"))
+    return RESOLUTION_STATUS_DISPLAY_MAP.get(text, RESOLUTION_STATUS_DISPLAY_MAP.get(text.lower(), _unknown_label_text(text, "未映射状态")))
 
 
 def source_type_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
         return "待补"
-    return SOURCE_TYPE_DISPLAY_MAP.get(text, SOURCE_TYPE_DISPLAY_MAP.get(text.lower(), f"未映射来源：{text}"))
+    return SOURCE_TYPE_DISPLAY_MAP.get(text, SOURCE_TYPE_DISPLAY_MAP.get(text.lower(), _unknown_label_text(text, "未映射来源")))
 
 
 def confidence_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
         return "待补"
-    return CONFIDENCE_DISPLAY_MAP.get(text, CONFIDENCE_DISPLAY_MAP.get(text.lower(), f"未映射置信度：{text}"))
+    return CONFIDENCE_DISPLAY_MAP.get(text, CONFIDENCE_DISPLAY_MAP.get(text.lower(), _unknown_label_text(text, "未映射置信度")))
 
 
 def model_type_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
         return "待补"
-    return MODEL_TYPE_DISPLAY_MAP.get(text, MODEL_TYPE_DISPLAY_MAP.get(text.upper(), f"未映射模型：{text}"))
+    return MODEL_TYPE_DISPLAY_MAP.get(text, MODEL_TYPE_DISPLAY_MAP.get(text.upper(), _unknown_label_text(text, "未映射模型")))
+
+
+def _unknown_label_text(value: object, fallback: str) -> str:
+    text = _clean(value)
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-", "^", ".", " ", "&"}) for ch in text):
+        return fallback
+    return text
 
 
 def action_label(value: Any) -> str:
