@@ -48,6 +48,13 @@ def test_drawer_labels_do_not_show_raw_internal_codes() -> None:
     assert dashboard_drawer._short_action_for_sentence("人工复核") == "等突破再评估"
 
 
+def test_drawer_distinguishes_missing_data_from_insufficient_data() -> None:
+    assert dashboard_drawer._drawer_technical_structure_label("DATA_MISSING") == "数据缺失"
+    assert dashboard_drawer._volume_price_status_label("DATA_MISSING") == "数据缺失"
+    assert dashboard_drawer._acceptance_status_label("DATA_MISSING") == "数据缺失"
+    assert dashboard_drawer._structure_status_label("DATA_MISSING") == "数据缺失"
+
+
 def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insufficient() -> None:
     row = pd.Series(
         {

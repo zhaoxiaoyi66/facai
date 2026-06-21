@@ -1470,7 +1470,7 @@ def _drawer_technical_structure_label(status: str) -> str:
         "WEAK_TREND_REPAIR": "弱趋势修复中",
         "BREAKDOWN_REVIEW": "破位复核",
         "RANGE_BASE_BUILDING": "区间筑底",
-        "DATA_MISSING": "数据不足",
+        "DATA_MISSING": "数据缺失",
     }.get(str(status or "").strip(), "待确认")
 
 
@@ -1607,7 +1607,7 @@ def _drawer_structure_entry_card_html(row: pd.Series) -> str:
     warnings = _drawer_text_list(advisor.get("structure_warnings") or row.get("structureWarnings"))
     steps = _drawer_text_list(advisor.get("next_confirmation_steps") or row.get("structureNextSteps"))
     numeric_score = _drawer_number(score)
-    is_data_missing = status_code == "DATA_MISSING" or status == "数据不足"
+    is_data_missing = status_code == "DATA_MISSING" or status in {"数据不足", "数据缺失"}
     score_text = "待补数据" if numeric_score is None or is_data_missing else f"{numeric_score:.0f} 分"
     gaps: list[str] = []
     detail_lines: list[str] = []
@@ -1781,7 +1781,7 @@ def _volume_price_status_label(value: object, *, score: float | None = None) -> 
         "UNCONFIRMED": "未确认",
         "FAILED": "失效",
         "OVEREXTENDED_SUPPORT_READ": "脱离观察区",
-        "DATA_MISSING": "数据不足",
+        "DATA_MISSING": "数据缺失",
     }.get(str(value or ""), "")
 
 
@@ -1791,7 +1791,7 @@ def _acceptance_status_label(value: object) -> str:
         "ACCEPTANCE_FORMING": "承接形成中",
         "ACCEPTANCE_UNCONFIRMED": "承接未确认",
         "ACCEPTANCE_FAILED": "承接失败",
-        "DATA_MISSING": "数据不足",
+        "DATA_MISSING": "数据缺失",
     }.get(str(value or ""), "")
 
 
@@ -1816,7 +1816,7 @@ def _structure_status_label(value: object) -> str:
         "STRUCTURE_FORMING": "结构形成中",
         "DIP_ONLY": "只是下跌",
         "STRUCTURE_BROKEN": "结构破坏",
-        "DATA_MISSING": "数据不足",
+        "DATA_MISSING": "数据缺失",
     }.get(str(value or ""), "")
 
 
