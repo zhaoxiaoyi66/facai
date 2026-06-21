@@ -2504,25 +2504,28 @@ def _monitor_log_summary_row(line: str) -> dict[str, str]:
 
 
 def _monitor_source_text(value: object) -> str:
-    text = str(value or "").strip()
+    text = str(value or "").strip().lower()
     if text == "manual":
         return "手动"
     if text == "scheduler":
         return "任务计划"
     if text == "loop":
         return "后台进程"
-    if not text:
+    if not text or text in {"unknown", "none", "null"}:
         return "未记录来源"
     return _unknown_display_text(text, "未识别来源")
 
 
 def _monitor_log_status_text(value: object) -> str:
-    text = str(value or "").strip()
+    text = str(value or "").strip().lower()
+    if not text or text in {"unknown", "none", "null"}:
+        return "未记录状态"
     return {
         "started": "开始",
         "success": "成功",
         "failed": "失败",
         "skipped": "跳过",
+        "summary": "摘要",
     }.get(text, _unknown_display_text(text, "未识别监控状态"))
 
 

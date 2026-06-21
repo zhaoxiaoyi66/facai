@@ -8614,6 +8614,19 @@ def test_monitor_log_aggregates_run_events_into_one_success_row() -> None:
     assert "run_id" not in frame.to_string()
 
 
+def test_monitor_raw_log_row_localizes_summary_and_unknown_source() -> None:
+    row = weekend_spread._monitor_log_summary_row(
+        "2026-06-20T16:50:01+00:00 run_id=abc source=unknown status=summary valid=54"
+    )
+    text = " ".join(str(value) for value in row.values())
+
+    assert row["来源"] == "未记录来源"
+    assert row["状态"] == "摘要"
+    assert "unknown" not in text
+    assert "summary" not in text
+    assert "run_id" not in text
+
+
 def test_monitor_log_failure_uses_chinese_error_reason() -> None:
     lines = [
         "2026-06-20T16:53:00+00:00 run_id=bad source=scheduler status=started",
