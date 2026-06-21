@@ -2346,6 +2346,10 @@ def _action_for_no_position(conclusion: dict[str, Any], action_result: Any | Non
 
 
 def _position_context_panel_html(context: dict[str, Any]) -> str:
+    action_text = _radar_unknown_display_text(
+        context.get("action_for_existing_position") if context.get("has_position") else context.get("action_for_no_position"),
+        "等待确认",
+    )
     if context.get("has_position"):
         headline = (
             f"我的持仓：{_quantity_text(context.get('shares'))} 股"
@@ -2358,19 +2362,19 @@ def _position_context_panel_html(context: dict[str, Any]) -> str:
         rows = [
             ("市值", _compact_money(context.get("market_value"))),
             ("组合仓位", _ratio_pct(context.get("portfolio_weight"))),
-            ("已有持仓动作", str(context.get("action_for_existing_position") or "持有观察")),
+            ("已有持仓动作", action_text if action_text != "等待确认" else "持有观察"),
         ]
     else:
         rows = [
             ("市值", _compact_money(context.get("market_value"))),
             ("组合仓位", _ratio_pct(context.get("portfolio_weight"))),
-            ("无持仓动作", str(context.get("action_for_no_position") or "等待确认")),
+            ("无持仓动作", action_text),
         ]
     row_html = "".join(f"<div><span>{escape(label)}</span><b>{escape(value)}</b></div>" for label, value in rows)
     return (
         '<aside class="ai-radar-position-context">'
         f"<strong>{escape(headline)}</strong>"
-        f'<span>动作建议：{escape(str(context.get("action_for_existing_position") if context.get("has_position") else context.get("action_for_no_position")))}</span>'
+        f'<span>动作建议：{escape(action_text)}</span>'
         f'<div class="ai-radar-position-context-grid">{row_html}</div>'
         "</aside>"
     )
@@ -2380,6 +2384,12 @@ def _position_capacity_panel_html(context: dict[str, Any], buy_zone_display: dic
     display = buy_zone_display or {}
     if not display:
         return _position_context_panel_html(context)
+    next_buy_action_text = _radar_unknown_display_text(display.get("next_buy_action_text"), "等待下一买点")
+    current_price_action_text = _radar_unknown_display_text(display.get("current_price_action_text"), "先观察")
+    risk_reward_decision_text = _radar_unknown_display_text(
+        display.get("risk_reward_decision_text"),
+        "风险收益和承接状态需一起复核。",
+    )
     if context.get("has_position"):
         headline = (
             f"我的持仓：{_quantity_text(context.get('shares'))} 股"
@@ -2393,14 +2403,14 @@ def _position_capacity_panel_html(context: dict[str, Any], buy_zone_display: dic
         ("计划上限", _share_count_text(display.get("plan_limit_shares")) if display.get("plan_limit_shares") is not None else "未设置计划上限（组合持仓页可设置）"),
         ("剩余计划额度", _share_count_text(display.get("remaining_plan_capacity_shares")) if display.get("remaining_plan_capacity_shares") is not None else "待设置"),
         ("当前价可新增", _share_count_text(display.get("current_price_add_capacity_shares")) if display.get("current_price_add_capacity_shares") is not None else "待确认"),
-        ("下一笔触发", str(display.get("next_buy_action_text") or "等待下一买点")),
-        ("已有持仓动作" if context.get("has_position") else "无持仓动作", str(display.get("current_price_action_text") or "先观察")),
+        ("下一笔触发", next_buy_action_text),
+        ("已有持仓动作" if context.get("has_position") else "无持仓动作", current_price_action_text),
     ]
     row_html = "".join(f"<div><span>{escape(label)}</span><b>{escape(value)}</b></div>" for label, value in rows)
     return (
         '<aside class="ai-radar-position-context">'
         f"<strong>{escape(headline)}</strong>"
-        f'<span>{escape(str(display.get("risk_reward_decision_text") or "风险收益和承接状态需一起复核。"))}</span>'
+        f"<span>{escape(risk_reward_decision_text)}</span>"
         f'<div class="ai-radar-position-context-grid">{row_html}</div>'
         "</aside>"
     )

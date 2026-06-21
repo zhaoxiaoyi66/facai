@@ -199,6 +199,40 @@ def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status(
     assert action_result.portfolio_updated_at == "2026-06-12T17:09:22+00:00"
 
 
+def test_position_capacity_panel_hides_internal_action_codes() -> None:
+    html = radar_ui._position_capacity_panel_html(
+        {"has_position": True, "shares": 10, "avg_cost": 100, "unrealized_pnl": 12, "unrealized_pnl_pct": 0.04},
+        {
+            "current_shares": 10,
+            "next_buy_action_text": "WAIT_FOR_PULLBACK",
+            "current_price_action_text": "HOLD_AND_REVIEW",
+            "risk_reward_decision_text": "INTERNAL_RR_STATE",
+        },
+    )
+
+    assert "WAIT_FOR_PULLBACK" not in html
+    assert "HOLD_AND_REVIEW" not in html
+    assert "INTERNAL_RR_STATE" not in html
+    assert "等待下一买点" in html
+    assert "先观察" in html
+    assert "风险收益和承接状态需一起复核" in html
+
+
+def test_position_capacity_panel_preserves_custom_chinese_action_text() -> None:
+    html = radar_ui._position_capacity_panel_html(
+        {"has_position": False},
+        {
+            "next_buy_action_text": "跌到买区上沿再复核",
+            "current_price_action_text": "暂不追高",
+            "risk_reward_decision_text": "赔率一般，先等承接。",
+        },
+    )
+
+    assert "跌到买区上沿再复核" in html
+    assert "暂不追高" in html
+    assert "赔率一般，先等承接。" in html
+
+
 def test_report_header_uses_localized_investment_conclusion() -> None:
     action_result = evaluate_action_fusion(
         ticker="GLW",
