@@ -81,10 +81,13 @@ class PortfolioModelTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as bad_quantity:
                 store.save_position("NOW", {"quantity": -1, "average_cost": 500})
-            with self.assertRaises(ValueError):
+            self.assertEqual(str(bad_quantity.exception), "股数不能为负数")
+
+            with self.assertRaises(ValueError) as bad_cost:
                 store.save_position("NOW", {"quantity": 1, "average_cost": -500})
+            self.assertEqual(str(bad_cost.exception), "平均成本不能为负数")
 
     def test_portfolio_position_tier_saves_only_manual_abc_values(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -95,8 +98,9 @@ class PortfolioModelTests(unittest.TestCase):
             self.assertEqual(created["position_tier"], "A")
             self.assertEqual(format_position_tier_label(created["position_tier"]), "A类")
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as invalid_tier:
                 store.save_position("NVDA", {"quantity": 2, "average_cost": 100, "position_tier": "UNCLASSIFIED"})
+            self.assertEqual(str(invalid_tier.exception), "持仓等级必须选择 A / B / C")
 
     def test_portfolio_position_missing_tier_is_legacy_safe_prompt(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -118,10 +122,13 @@ class PortfolioModelTests(unittest.TestCase):
             self.assertEqual(updated["quantity"], 2)
             self.assertEqual(updated["average_cost"], 100)
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as missing_tier:
                 store.update_position_tier("NVDA", "")
-            with self.assertRaises(ValueError):
+            self.assertEqual(str(missing_tier.exception), "持仓等级必须选择 A / B / C")
+
+            with self.assertRaises(ValueError) as invalid_tier:
                 store.update_position_tier("NVDA", "UNCLASSIFIED")
+            self.assertEqual(str(invalid_tier.exception), "持仓等级必须选择 A / B / C")
 
     def test_portfolio_position_missing_position_error_is_chinese(self) -> None:
         with TemporaryDirectory() as tmpdir:

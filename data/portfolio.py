@@ -35,6 +35,16 @@ POSITION_TIER_LABELS = {
     "C": "C类",
 }
 POSITION_TIER_MISSING_LABEL = "需设置等级"
+POSITION_FIELD_LABELS = {
+    "average_cost": "平均成本",
+    "first_trim_price": "第一档减仓价",
+    "max_acceptable_position_pct": "仓位上限",
+    "planned_sell_price": "计划卖出价",
+    "quantity": "股数",
+    "review_price": "复盘价",
+    "second_trim_price": "第二档减仓价",
+    "target_position_pct": "目标仓位",
+}
 
 
 class PortfolioPositionStore:
@@ -433,11 +443,11 @@ def _normalize_symbol(symbol: str) -> str:
 def _clean_position_tier(value, *, required: bool) -> str | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         if required:
-            raise ValueError("position_tier is required")
+            raise ValueError("持仓等级必须选择 A / B / C")
         return None
     tier = str(value).strip().upper()
     if tier not in VALID_POSITION_TIERS:
-        raise ValueError("position_tier must be A, B, or C")
+        raise ValueError("持仓等级必须选择 A / B / C")
     return tier
 
 
@@ -477,16 +487,17 @@ def position_tier_badge_class(value) -> str:
 
 
 def _to_non_negative_number(value, field: str, required: bool) -> float | None:
+    label = POSITION_FIELD_LABELS.get(str(field or "").strip(), "该字段")
     if value is None or (isinstance(value, str) and not value.strip()):
         if required:
-            raise ValueError(f"{field} is required")
+            raise ValueError(f"缺少必填信息：{label}")
         return None
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be a number") from exc
+        raise ValueError(f"{label}需要填写数字") from exc
     if number < 0:
-        raise ValueError(f"{field} cannot be negative")
+        raise ValueError(f"{label}不能为负数")
     return number
 
 

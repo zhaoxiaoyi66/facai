@@ -794,8 +794,8 @@ def test_advisory_decisions_allow_manual_continue_and_record_override(decision: 
     ("symbol", "values", "match"),
     [
         ("", _base_values(), "缺少股票代码"),
-        ("MSFT", _base_values(quantity=0), "quantity must be positive"),
-        ("MSFT", _base_values(price=0), "price must be positive"),
+        ("MSFT", _base_values(quantity=0), "数量必须大于 0"),
+        ("MSFT", _base_values(price=0), "成交价格必须大于 0"),
     ],
 )
 def test_trade_gate_keeps_technical_validation_hard_errors(symbol: str, values: dict, match: str) -> None:

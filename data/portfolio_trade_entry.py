@@ -38,6 +38,10 @@ from data.volume_price_acceptance import evaluate_volume_price_acceptance, volum
 
 VALID_POSITION_TIERS = {"A", "B", "C"}
 VALID_ENTRY_MODES = {"normal_buy", "planned_ladder_buy", "starter_position"}
+TRADE_ENTRY_FIELD_LABELS = {
+    "price": "成交价格",
+    "quantity": "数量",
+}
 
 
 def submit_portfolio_buy_add(
@@ -613,7 +617,7 @@ def _position_is_active(position: dict[str, Any]) -> bool:
 def _clean_position_tier(value: object) -> str:
     tier = str(value or "").strip().upper()
     if tier not in VALID_POSITION_TIERS:
-        raise ValueError("position_tier must be A, B, or C")
+        raise ValueError("持仓等级必须选择 A / B / C")
     return tier
 
 
@@ -625,7 +629,8 @@ def _clean_entry_mode(value: object) -> str:
 def _require_positive_number(value: object, field: str) -> float:
     number = _number(value)
     if number is None or number <= 0:
-        raise ValueError(f"{field} must be positive")
+        label = TRADE_ENTRY_FIELD_LABELS.get(str(field or "").strip(), "该字段")
+        raise ValueError(f"{label}必须大于 0")
     return number
 
 
