@@ -2010,6 +2010,29 @@ def test_ai_radar_debug_html_localizes_fields_without_name_error() -> None:
     assert "sector / industry" not in html
 
 
+def test_ai_radar_debug_html_localizes_zone_source_codes() -> None:
+    html = radar_ui._debug_html(
+        {
+            "price_zones": {
+                "source": "missing",
+                "zone_sources": {
+                    "buy_zone": "missing",
+                    "watch_zone": "manual_input",
+                    "chase_zone": "ema_pullback",
+                },
+            },
+        },
+        {"ticker": "MSFT"},
+    )
+
+    assert "待补齐" in html
+    assert "手动维护" in html
+    assert "均线回踩模型" in html
+    assert "missing" not in html
+    assert "manual_input" not in html
+    assert "ema_pullback" not in html
+
+
 def test_ai_radar_performance_diagnostics_hide_internal_cache_filename() -> None:
     perf = radar_ui.PerfProbe()
     perf.add("财务 / 基本面读取", 0.0, cache_hit=True, external_api=False, note="来自研报列表缓存")

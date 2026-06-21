@@ -1462,6 +1462,10 @@ def _debug_html(debug: dict[str, Any], report: dict[str, Any] | None = None) -> 
     zone_sources = _dict_value(zones, "zone_sources") or {}
     below_reason = str(debug.get("below_buy_zone_reason") or "").strip()
     below_note = f'<div class="ai-radar-debug-note">{escape(below_reason)}</div>' if below_reason else ""
+    zone_source = _zone_source_display_text(zones.get("source"))
+    buy_zone_source = _zone_source_display_text(zone_sources.get("buy_zone"))
+    watch_zone_source = _zone_source_display_text(zone_sources.get("watch_zone"))
+    chase_zone_source = _zone_source_display_text(zone_sources.get("chase_zone"))
     return (
         '<section class="ai-radar-debug">'
         '<div class="ai-radar-debug-summary">'
@@ -1469,13 +1473,13 @@ def _debug_html(debug: dict[str, Any], report: dict[str, Any] | None = None) -> 
         f'<div><span>区间状态</span><strong>{escape(_price_position_label(debug.get("price_position")))}</strong></div>'
         f'<div><span>距买区</span><strong>{escape(_signed_pct(debug.get("distance_to_buy_zone_pct")))}</strong></div>'
         f'<div><span>缺失字段</span><strong>{escape(_field_list_display(debug.get("data_missing_fields"), report))}</strong></div>'
-        f'<div><span>区间来源</span><strong>{escape(str(zones.get("source") or "missing"))}</strong></div>'
+        f'<div><span>区间来源</span><strong>{escape(zone_source)}</strong></div>'
         f'<div><span>字段别名风险</span><strong>{escape(_inline_list(debug.get("field_alias_notes")))}</strong></div>'
         '</div>'
         '<div class="ai-radar-debug-summary compact">'
-        f'<div><span>技术回踩带</span><strong>{escape(str(zone_sources.get("buy_zone") or "missing"))}</strong></div>'
-        f'<div><span>观察区</span><strong>{escape(str(zone_sources.get("watch_zone") or "missing"))}</strong></div>'
-        f'<div><span>追高区</span><strong>{escape(str(zone_sources.get("chase_zone") or "missing"))}</strong></div>'
+        f'<div><span>技术回踩带</span><strong>{escape(buy_zone_source)}</strong></div>'
+        f'<div><span>观察区</span><strong>{escape(watch_zone_source)}</strong></div>'
+        f'<div><span>追高区</span><strong>{escape(chase_zone_source)}</strong></div>'
         f'<div><span>风险提示原因</span><strong>{escape(_inline_list(debug.get("block_reasons")))}</strong></div>'
         '</div>'
         f'{below_note}'
@@ -1485,6 +1489,27 @@ def _debug_html(debug: dict[str, Any], report: dict[str, Any] | None = None) -> 
         '</table>'
         '</section>'
     )
+
+
+def _zone_source_display_text(value: object) -> str:
+    text = str(value or "").strip()
+    normalized = text.lower().replace("-", "_").replace(" ", "_")
+    mapping = {
+        "missing": "待补齐",
+        "missing_technical_data": "待补齐",
+        "manual_input": "手动维护",
+        "manual": "手动维护",
+        "radar": "系统生成",
+        "derived": "规则推导",
+        "rules": "规则推导",
+        "technical_entry_model": "技术模型",
+        "ema_pullback": "均线回踩模型",
+        "trend_review": "趋势复核模型",
+        "breakdown_review": "破位复核模型",
+    }
+    if normalized in mapping:
+        return mapping[normalized]
+    return _radar_unknown_display_text(text, "来源待确认")
 
 
 def _research_header_html(
