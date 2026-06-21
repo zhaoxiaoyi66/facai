@@ -134,6 +134,7 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
     assert dashboard._refresh_part_status_label("refreshed") == "已更新"
     assert dashboard._refresh_part_status_label("not_run") == "未执行"
     assert dashboard._refresh_part_status_label("stale") == "待更新"
+    assert dashboard._refresh_part_status_label("unknown") == "待确认"
     assert dashboard._refresh_part_status_label(None) == "待补"
     assert dashboard._refresh_part_status_label("NEW_REFRESH_STATUS") == "待补"
 

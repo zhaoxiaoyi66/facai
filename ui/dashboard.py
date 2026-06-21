@@ -2463,7 +2463,7 @@ def _refresh_part_status_label(status: object) -> str:
         "missing": "缺失",
         "stale": "待更新",
         "not_run": "未执行",
-        "unknown": "未知",
+        "unknown": "待确认",
     }.get(text, _dashboard_unknown_display_text(text, "待补"))
 
 
