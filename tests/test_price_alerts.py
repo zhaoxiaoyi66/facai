@@ -8,9 +8,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from data.price_alerts import PriceAlertStore, evaluate_price_alerts, sync_buy_plan_price_alert
+from data.price_alerts import _money
 
 
 NOW = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+
+
+def test_price_alert_money_placeholder_is_chinese() -> None:
+    assert _money(None) == "暂缺"
+    assert _money("bad-price") == "暂缺"
 
 
 def _db(tmpdir: str) -> Path:
@@ -111,7 +117,8 @@ def test_price_alert_falls_back_to_market_context_latest_close() -> None:
         assert alerts[0]["currentPrice"] == 195
         assert alerts[0]["priceSource"] == "price_history"
         assert alerts[0]["historyTickerKey"] == "FMP:NVDA"
-        assert "current price" in alerts[0]["marketWarning"]
+        assert "报价快照缺失" in alerts[0]["marketWarning"]
+        assert "current price" not in alerts[0]["marketWarning"]
 
 
 def test_price_alert_does_not_trigger_before_price_crosses() -> None:

@@ -678,7 +678,7 @@ def _number(value: object) -> float | None:
 
 def _money(value: object) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"${number:,.2f}"
+    return "暂缺" if number is None else f"${number:,.2f}"
 
 
 def _time_iso(value: datetime | None) -> str:
