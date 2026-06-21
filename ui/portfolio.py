@@ -993,7 +993,7 @@ def _submit_portfolio_buy_add(
             },
         )
     else:
-        message = f"{entry.get('symbol')} 未能入账：{sync.get('error') or '未知错误'}"
+        message = f"{entry.get('symbol')} 未能入账：{sync.get('error') or '未返回错误原因'}"
         st.session_state["portfolio_save_notice"] = ("error", message)
     st.rerun()
     return

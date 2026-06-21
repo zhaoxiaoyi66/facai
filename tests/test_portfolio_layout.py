@@ -84,6 +84,9 @@ def test_portfolio_reason_labels_do_not_show_raw_internal_codes() -> None:
     assert portfolio_ui._reconciliation_reason_text({"reasons": ["NEW_RECON_REASON"]}) == "其他原因"
     assert portfolio_ui._portfolio_buy_plan_reasons({"plan_match_status": "NEW_PLAN_STATUS"}) == ["其他原因"]
     assert portfolio_ui._portfolio_starter_reasons({"starter_match_status": "NEW_STARTER_STATUS"}) == []
+    submit_source = inspect.getsource(portfolio_ui._submit_portfolio_buy_add)
+    assert "未返回错误原因" in submit_source
+    assert "未知错误" not in submit_source
 
 
 def test_portfolio_drawer_discipline_labels_do_not_show_mojibake() -> None:

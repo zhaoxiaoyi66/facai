@@ -2342,7 +2342,7 @@ def _apply_portfolio_ledger_or_remove(store: TradeJournalStore, saved: dict) -> 
     if status == "already_synced":
         return ("error", f"{saved['symbol']} 已入账过，未重复作用到持仓。")
     store.delete_entry(int(saved.get("id") or 0))
-    return ("error", f"{saved['symbol']} 入账失败：{result.get('error') or '未知错误'}。交易日志未保存。")
+    return ("error", f"{saved['symbol']} 入账失败：{result.get('error') or '未返回错误原因'}。交易日志未保存。")
 
 
 def _render_notice() -> None:

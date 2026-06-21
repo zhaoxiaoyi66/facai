@@ -136,6 +136,22 @@ def test_trade_journal_signal_labels_do_not_show_raw_internal_codes() -> None:
         assert "NEW_" not in label
 
 
+def test_trade_journal_ledger_failure_uses_clear_missing_error_reason(monkeypatch) -> None:
+    deleted: list[int] = []
+    store = SimpleNamespace(delete_entry=lambda entry_id: deleted.append(entry_id))
+    monkeypatch.setattr(trade_journal, "apply_trade_to_portfolio", lambda _entry_id: {"status": "error"})
+
+    level, message = trade_journal._apply_portfolio_ledger_or_remove(
+        store,
+        {"id": 42, "symbol": "NVDA", "action_type": "buy"},
+    )
+
+    assert level == "error"
+    assert message == "NVDA 入账失败：未返回错误原因。交易日志未保存。"
+    assert deleted == [42]
+    assert "未知错误" not in message
+
+
 def test_new_sell_entry_queues_intent_dialog_before_save() -> None:
     source = inspect.getsource(trade_journal._render_editor)
 
