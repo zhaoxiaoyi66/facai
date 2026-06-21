@@ -5314,6 +5314,8 @@ def _clean_self_check_text(value: object, fallback: str) -> str:
     text = str(value or "").strip()
     if not text or text.lower() in {"none", "anchor_source"}:
         return fallback
+    if "_" in text and all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
     return text
 
 
